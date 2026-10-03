@@ -1,0 +1,109 @@
+*buffer_groups.txt*  Two editor groups with independent buffer navigation
+
+==============================================================================
+OVERVIEW                                                   *buffer_groups*
+
+Requires Neovim >= 0.11. No runtime dependencies. Groups are exclusive within a
+tabpage; different tabpages have independent state. One normal group exists
+before partitioning. Listed unloaded buffers remain available.
+
+Local registration: >lua
+  vim.opt.runtimepath:prepend(vim.fn.expand('~/Dev/Personal/buffer_groups'))
+  require('buffer_groups').setup({
+    keymaps = { move_left = '<leader>h', move_right = '<leader>l',
+                previous = '<A-h>', next = '<A-l>' },
+  })
+<
+Remove this registration and restart to stop loading the local plugin.
+
+==============================================================================
+OPTIONS                                              *buffer_groups.setup()*
+
+setup({opts}) is idempotent. No default keymaps. Available mapping names:
+move_left, move_right, previous, next, close (normal mode).
+
+exclude.floating=true is required: only normal windows can own layout groups.
+exclude.unlisted=true; default filetypes are snacks_layout_box/snacks_picker_list;
+default buftypes are nofile/help/terminal/quickfix/prompt. Lists replace defaults.
+exclude.bufname is a list of Lua name patterns. exclude.window/exclude.buffer
+are predicates receiving {win,buf,tabpage}; true excludes. Hidden buffers can
+have win=nil. Any matching exclusion wins.
+
+behavior.follow_buffer=true
+behavior.empty_group='close'
+behavior.existing_buffer='focus_owner' ('transfer' also supported)
+behavior.single_buffer_split='require_two' ('new_buffer' also supported)
+behavior.manual_window_close='merge'
+closing.last_buffer='empty' ('quit' also supported)
+
+Initialize with two eligible buffers; otherwise leave layout unchanged. Existing
+pairs are adopted. More than two eligible windows prevents initialization.
+Stacked pairs become side by side; existing editor IDs and sidebars are kept.
+Moving buffers appends to the destination list and removes source membership;
+empty source closes. Manual window close merges into the surviving group.
+Unsaved changes are preserved by moving; close requires explicit force to
+discard them. Rename/unload keep ownership. Auxiliary views remain excluded.
+
+==============================================================================
+API                                                    *buffer_groups-api*
+
+require('buffer_groups') exposes:
+  move('left'|'right', {buf?,win?,tabpage?,group?})
+  cycle(1|-1)
+  open(bufnr, {win?,tabpage?,group?,focus?})
+  register(bufnr, {win?,tabpage?,group?})
+  close(bufnr, {force?,tabpage?})
+  get_state({tabpage?})
+  get_owner(bufnr, {tabpage?})
+  enable(), disable(), is_enabled()
+
+Mutations return true,result or false,error. Commands report errors. Queries
+return defensive copies. State: {enabled,tabpage,active,focused,groups,owners}.
+Group: {id,win,side,buffers,current}. Side: left/right/single. Stable group IDs
+identify ownership independently of spatial positions.
+
+disable() leaves windows/buffers intact and restores owned mappings only if
+the current mapping is still installed by the plugin. enable() starts fresh
+tracking; split initialization remains lazy.
+
+==============================================================================
+COMMANDS                                                *:BufferGroupsMove*
+
+:BufferGroupsMove left|right    Initialize or transfer buffer to side.
+:BufferGroupsNext              Cycle forward in the focused group.
+:BufferGroupsPrevious          Cycle backwards in the focused group.
+:BufferGroupsClose[!]          Close buffer; ! explicitly discards changes.
+:BufferGroupsEnable            Enable observers/configured mappings.
+:BufferGroupsDisable           Disable while preserving windows and buffers.
+
+User BufferGroupsChanged is emitted after committed changes, with event.data
+{reason,tabpage}. Suitable for UI integrations; redrawtabline follows changes.
+
+==============================================================================
+BUFFERLINE                                       *buffer_groups-bufferline*
+
+Compose existing setup options, before one Bufferline setup call: >lua
+  local config = { options = { diagnostics = 'nvim_lsp' } }
+  if package.loaded['buffer_groups'] then
+    config = require('buffer_groups.integrations.bufferline').extend(config)
+  end
+  require('bufferline').setup(config)
+<
+Core functions without Bufferline. Adapter displays ownership in a single global
+bar, preserves/composes host options and callbacks, and focuses owner on click.
+Core disable falls back to original callbacks. Pin/manual sorting/native cycle
+operate on Bufferline's global list and are outside the managed v1 behavior.
+extend(config, { managed_order = false }) retains Bufferline's native sorter.
+The insert_after_current and insert_at_end modes require that option because
+they depend on Bufferline's private render history.
+
+==============================================================================
+LIMITS                                                 *buffer_groups-limits*
+
+Two managed groups only. Floating/auxiliary windows are not layout owners.
+Additional manual splits stay unmanaged while partitioned. No cross-restart
+persistence. No WinShift dependency or integration. No independent per-split
+Bufferline rows. Async integrations should pass an explicit editor window to
+open/register instead of inferring ownership from the focused prompt.
+
+vim:tw=78:ts=8:ft=help:norl:

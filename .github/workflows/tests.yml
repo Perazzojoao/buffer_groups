@@ -1,0 +1,25 @@
+name: tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.11.0, stable]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install official Neovim
+        env:
+          NVIM_VERSION: ${{ matrix.neovim }}
+        run: |
+          curl -fSL "https://github.com/neovim/neovim/releases/download/$NVIM_VERSION/nvim-linux-x86_64.tar.gz" -o /tmp/nvim.tar.gz
+          mkdir -p /tmp/nvim
+          tar -xzf /tmp/nvim.tar.gz -C /tmp/nvim --strip-components=1
+          echo /tmp/nvim/bin >> "$GITHUB_PATH"
+      - name: Core and adapter tests
+        run: python3 tests/run.py
+      - name: Keyboard PTY tests
+        run: python3 tests/run.py --tui

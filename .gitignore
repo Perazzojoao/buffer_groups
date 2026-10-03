@@ -1,0 +1,6 @@
+doc/tags
+__pycache__/
+*.pyc
+.deps/
+*.log
+.nvimlog
