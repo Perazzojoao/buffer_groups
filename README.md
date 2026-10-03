@@ -244,7 +244,10 @@ callback behavior; unregistering the local plugin keeps the config above usable.
 
 The optional second argument to `extend(config, adapter_opts)` accepts
 `managed_order = false` to keep Bufferline's sorter. By default managed groups
-follow their buffer order; the host sorter still orders unmanaged buffers.
+follow their buffer order, including after returning to a single group. Within
+each Bufferline group, managed buffers precede unmanaged buffers; the host
+sorter still orders unmanaged buffers. Disabling the core restores the host
+sorter for all buffers.
 The history-based sort modes `insert_after_current` and `insert_at_end` require
 `managed_order = false` because their render history is private to Bufferline.
 

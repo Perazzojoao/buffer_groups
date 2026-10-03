@@ -135,5 +135,100 @@ assert_true(
 )
 assert_equal(api.nvim_win_get_buf(first_owner_snapshot.win), first, "Bufferline click did not open the owned buffer")
 
+local function rendered_ids()
+  api.nvim_eval_statusline(vim.o.tabline, { use_tabline = true, maxwidth = vim.o.columns })
+  return vim.tbl_map(function(element)
+    return element.id
+  end, Bufferline.get_elements().elements)
+end
+
+local function assert_cycles_match_rendered_order(order, label)
+  assert_equal(rendered_ids(), order, label .. ": Bufferline differs from the core cycle order")
+  api.nvim_set_current_buf(order[1])
+  for _, delta in ipairs({ 1, -1 }) do
+    local key = delta == 1 and "<A-l>" or "<A-h>"
+    local input = api.nvim_replace_termcodes(key, true, false, true)
+    for _ = 1, #order + 1 do
+      local before = api.nvim_get_current_buf()
+      local index = vim.fn.index(order, before) + 1
+      assert_true(index > 0, label .. ": focused buffer is not in the group")
+      local expected = order[(index - 1 + delta) % #order + 1]
+      api.nvim_feedkeys(input, "xt", false)
+      assert_equal(api.nvim_get_current_buf(), expected, label .. ": " .. key .. " moved against the visual order")
+      assert_equal(rendered_ids(), order, label .. ": cycling reordered Bufferline")
+    end
+  end
+end
+
+local function reset_single_owner(count, external_tab)
+  assert_true(plugin.disable())
+  vim.cmd("silent tabonly")
+  vim.cmd("silent only")
+  api.nvim_win_set_buf(0, first)
+  for _, buf in ipairs(api.nvim_list_bufs()) do
+    if buf ~= first and vim.bo[buf].buflisted then
+      api.nvim_buf_delete(buf, { force = true })
+    end
+  end
+  local home = api.nvim_get_current_tabpage()
+  local external
+  if external_tab then
+    vim.cmd("tabnew")
+    external = api.nvim_get_current_buf()
+    api.nvim_buf_set_name(external, temp .. "/external.txt")
+    api.nvim_set_current_tabpage(home)
+  end
+  local buffers = { first }
+  for index = 2, count do
+    buffers[index] = make_buffer("collapse-" .. index .. ".txt")
+  end
+  plugin.setup({ keymaps = { next = "<A-l>", previous = "<A-h>" } })
+  return buffers, external
+end
+
+for _, count in ipairs({ 3, 4 }) do
+  for _, collapse in ipairs({ "transfer", "manual_close" }) do
+    local buffers = reset_single_owner(count)
+    assert_cycles_match_rendered_order(buffers, "initial single group")
+    api.nvim_set_current_buf(buffers[2])
+    assert_true(plugin.move("right"))
+    if collapse == "transfer" then
+      assert_true(plugin.move("left"))
+    else
+      local moved_owner = plugin.get_owner(buffers[2])
+      api.nvim_win_close(moved_owner.win, false)
+    end
+    local single = plugin.get_state()
+    assert_true(not single.active and #single.groups == 1, "fixture did not return to one group")
+    local order = vim.deepcopy(buffers)
+    table.remove(order, 2)
+    order[#order + 1] = buffers[2]
+    assert_equal(single.groups[1].buffers, order, "collapse lost the preserved membership order")
+    assert_cycles_match_rendered_order(order, collapse .. " with " .. count .. " buffers")
+    local created = make_buffer("new-after-collapse.txt")
+    assert_true(plugin.open(created))
+    order[#order + 1] = created
+    assert_cycles_match_rendered_order(order, "new buffer after " .. collapse)
+  end
+end
+
+-- Another tab's buffer remains visible globally, after the current owner's
+-- block. Its numeric ID lies between owned IDs, exposing comparator cycles.
+local buffers, external = reset_single_owner(3, true)
+api.nvim_set_current_buf(buffers[1])
+assert_true(plugin.move("left"))
+assert_true(plugin.move("right"))
+local single = plugin.get_state()
+local order = { buffers[2], buffers[3], buffers[1] }
+assert_equal(single.groups[1].buffers, order, "external-tab fixture lost its owned order")
+assert_equal(rendered_ids(), { buffers[2], buffers[3], buffers[1], external }, "external tab breaks owner ordering")
+local disabled, disable_err = plugin.disable()
+assert_true(disabled, tostring(disable_err))
+local native_order = { buffers[1], buffers[2], buffers[3], external }
+table.sort(native_order)
+assert_equal(rendered_ids(), native_order, "disable did not restore Bufferline's ID sorter")
+
+print("integration: single-owner visual cycle order OK (transfer/manual close, 3/4 buffers, new files, other tab)")
+
 print("integration: Snacks picker and Bufferline adapter OK")
 vim.cmd("qa!")

@@ -192,23 +192,31 @@ local function make_snapshot_reader(core)
 
   local function compare_owned(a, b)
     local snapshot = state()
-    if not get_enabled(core) or snapshot.enabled ~= true or snapshot.active ~= true then
+    if not get_enabled(core) or snapshot.enabled ~= true then
       return nil
     end
 
-    for _, group in ipairs(snapshot.groups or {}) do
-      local rank_a, rank_b
+    local rank_a, rank_b
+    for group_index, group in ipairs(snapshot.groups or {}) do
       for index, bufnr in ipairs(group.buffers or {}) do
         if bufnr == a then
-          rank_a = index
+          rank_a = { group_index, index }
         end
         if bufnr == b then
-          rank_b = index
+          rank_b = { group_index, index }
         end
       end
-      if rank_a ~= nil and rank_b ~= nil then
-        return rank_a < rank_b
-      end
+    end
+
+    -- Cycling uses the same ordered list with one or two owners. Keep owned
+    -- buffers together ahead of unmanaged buffers so the composed comparator
+    -- remains transitive when other tabs' buffers share Bufferline's group.
+    if rank_a and rank_b then
+      return rank_a[1] < rank_b[1] or rank_a[1] == rank_b[1] and rank_a[2] < rank_b[2]
+    elseif rank_a then
+      return true
+    elseif rank_b then
+      return false
     end
 
     return nil

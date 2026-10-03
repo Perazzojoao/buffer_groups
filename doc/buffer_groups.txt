@@ -130,6 +130,9 @@ Core functions without Bufferline. Adapter displays ownership in a single global
 bar, preserves/composes host options and callbacks, and focuses owner on click.
 Fullscreen filters out the hidden group's buffer tabs; restoring its split
 reveals those tabs again. The original custom_filter is still respected.
+Managed sorting follows the core cycle order with one or two owners. Within
+each Bufferline group, managed buffers precede unmanaged buffers; the host
+sorter orders unmanaged buffers. Disabling the core restores the host sorter.
 Core disable falls back to original callbacks. Pin/manual sorting/native cycle
 operate on Bufferline's global list and are outside the managed v1 behavior.
 extend(config, { managed_order = false }) retains Bufferline's native sorter.

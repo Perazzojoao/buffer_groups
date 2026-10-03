@@ -160,6 +160,57 @@ eq(comparator({ id = 101 }, { id = 102 }), false, "owned order is stable")
 eq(comparator({ id = 201 }, { id = 202 }), false, "host sorter handles unmanaged buffers")
 truthy(calls.host_sorts > 0, "host sorter is composed")
 
+-- Returning to one owner keeps its cycle order even though Left/Right labels
+-- disappear. Externals must not make the combined comparator non-transitive.
+local partitioned_state = vim.deepcopy(state)
+state.active = false
+state.groups = { { id = 1, win = 11, side = "single", buffers = { 101, 103, 102 } } }
+eq(left_group.matcher({ id = 101 }), false, "single owner does not retain a Left label")
+eq(right_group.matcher({ id = 103 }), false, "single owner does not retain a Right label")
+eq(comparator({ id = 101 }, { id = 103 }), true, "single owner keeps core order instead of host sorting")
+eq(comparator({ id = 103 }, { id = 101 }), false, "single owner reverse comparison keeps core order")
+eq(comparator({ id = 102 }, { id = 104 }), true, "owned buffers precede other-tab buffers")
+eq(comparator({ id = 104 }, { id = 102 }), false, "other-tab buffers follow owned buffers")
+
+local elements = { { id = 100 }, { id = 101 }, { id = 102 }, { id = 103 }, { id = 104 } }
+for _, a in ipairs(elements) do
+  eq(comparator(a, a), false, "comparator is irreflexive")
+  for _, b in ipairs(elements) do
+    if comparator(a, b) then
+      eq(comparator(b, a), false, "comparator is asymmetric")
+      for _, c in ipairs(elements) do
+        if comparator(b, c) then
+          eq(comparator(a, c), true, "owned and host ordering compose transitively")
+        end
+      end
+    end
+  end
+end
+for offset = 1, #elements do
+  local reordered = {}
+  for index = 1, #elements do
+    reordered[index] = elements[(index + offset - 2) % #elements + 1]
+  end
+  table.sort(reordered, comparator)
+  eq(
+    table.concat(
+      vim.tbl_map(function(element)
+        return element.id
+      end, reordered),
+      ","
+    ),
+    "101,103,102,104,100",
+    "input order cannot change the result; host descending order survives between externals"
+  )
+end
+
+enabled = false
+eq(comparator({ id = 101 }, { id = 103 }), false, "disabled core restores host sorting")
+enabled = true
+state.enabled = false
+eq(comparator({ id = 101 }, { id = 103 }), false, "disabled snapshot restores host sorting")
+state = partitioned_state
+
 local extension_sort = adapter.extend({ options = { sort_by = "extension" } }, { core = core }).options.sort_by
 eq(
   extension_sort({ id = 501, name = "a.z" }, { id = 502, name = "z.a" }),

@@ -238,12 +238,13 @@ def main() -> int:
             integration_passed, integration_failed = run_integration(nvim, temp_root, plugin_paths)
             passed += integration_passed
             failed += integration_failed
-        if args.tui:
+        tui_suites = (("tui", "tui.py"), ("cycle-tui", "cycle_tui.py")) if args.tui else ()
+        for label, filename in tui_suites:
             try:
                 tui = subprocess.run(
-                    [sys.executable, str(TESTS / "tui.py"), "--nvim", nvim],
+                    [sys.executable, str(TESTS / filename), "--nvim", nvim],
                     cwd=ROOT,
-                    env=base_env(temp_root / "tui", nvim, plugin_paths),
+                    env=base_env(temp_root / label, nvim, plugin_paths),
                     text=True,
                     capture_output=True,
                     timeout=30,
@@ -252,17 +253,17 @@ def main() -> int:
                 out = (tui.stdout + tui.stderr).strip()
             except subprocess.TimeoutExpired as error:
                 tui_returncode = 124
-                out = "TUI runner timed out\n" + "\n".join(
+                out = label + " runner timed out\n" + "\n".join(
                     part.decode(errors="replace") if isinstance(part, bytes) else (part or "")
                     for part in (error.stdout, error.stderr)
                 )
             if tui_returncode:
-                print("FAIL tui", file=sys.stderr)
+                print("FAIL " + label, file=sys.stderr)
                 if out:
                     print(out, file=sys.stderr)
                 failed += 1
             else:
-                print("PASS tui")
+                print("PASS " + label)
                 if out:
                     print(out)
                 passed += 1
