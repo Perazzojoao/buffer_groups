@@ -17,7 +17,7 @@ M.defaults = {
     single_buffer_split = "require_two",
     manual_window_close = "merge",
   },
-  closing = { last_buffer = "empty" },
+  closing = { last_buffer = "empty", save_others = false },
 }
 local function fail(s)
   error("buffer_groups: " .. s, 3)
@@ -91,7 +91,19 @@ function M.resolve(opts)
   if c.closing.last_buffer ~= "empty" and c.closing.last_buffer ~= "quit" then
     fail("invalid closing.last_buffer")
   end
-  local keys = { move_left = true, move_right = true, previous = true, next = true, close = true }
+  if type(c.closing.save_others) ~= "boolean" then
+    fail("closing.save_others must be boolean")
+  end
+  local keys = {
+    move_left = true,
+    move_right = true,
+    previous = true,
+    next = true,
+    close = true,
+    close_group = true,
+    close_others = true,
+    toggle_fullscreen = true,
+  }
   for k, v in pairs(c.keymaps) do
     if not keys[k] then
       fail("unknown keymap " .. k)

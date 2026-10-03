@@ -58,7 +58,7 @@ local function editor_windows(tab)
 end
 local function group(win)
   next_id = next_id + 1
-  return { id = next_id, win = win, side = "single", buffers = {}, current = nil }
+  return { id = next_id, win = win, side = "single", buffers = {}, current = nil, hidden = false }
 end
 local function owner(s, buf)
   for _, g in ipairs(s.groups) do
@@ -112,6 +112,10 @@ local function event(tab, reason)
   vim.cmd("redrawtabline")
 end
 local function sides(s)
+  if s.fullscreen then
+    s.active = #s.groups > 1
+    return
+  end
   if #s.groups == 1 then
     s.active = false
     s.groups[1].side = "single"
@@ -124,6 +128,116 @@ local function sides(s)
   s.groups[2].side = "right"
   s.active = true
 end
+local function save_window(g)
+  g.saved = {
+    buf = api.nvim_win_get_buf(g.win),
+    width = api.nvim_win_get_width(g.win),
+    height = api.nvim_win_get_height(g.win),
+    options = {},
+    view = api.nvim_win_call(g.win, function()
+      return vim.fn.winsaveview()
+    end),
+  }
+  for name, info in pairs(api.nvim_get_all_options_info()) do
+    if info.scope == "win" then
+      local ok, value = pcall(api.nvim_get_option_value, name, { win = g.win, scope = "local" })
+      if ok then
+        g.saved.options[name] = value
+      end
+    end
+  end
+end
+local function restore_window(g, restore_view)
+  if not g.saved then
+    return
+  end
+  for name, value in pairs(g.saved.options) do
+    pcall(api.nvim_set_option_value, name, value, { win = g.win, scope = "local" })
+  end
+  pcall(api.nvim_win_set_width, g.win, g.saved.width)
+  pcall(api.nvim_win_set_height, g.win, g.saved.height)
+  if restore_view ~= false and api.nvim_win_get_buf(g.win) == g.saved.buf then
+    pcall(api.nvim_win_call, g.win, function()
+      vim.fn.winrestview(g.saved.view)
+    end)
+  end
+end
+local function restore_unmanaged_widths(s)
+  for win, width in pairs(s.unmanaged_widths or {}) do
+    if api.nvim_win_is_valid(win) then
+      pcall(api.nvim_win_set_width, win, width)
+    end
+  end
+end
+local function restore_hidden(s)
+  local anchor
+  for _, g in ipairs(s.groups) do
+    if not g.hidden and g.win and api.nvim_win_is_valid(g.win) then
+      anchor = g
+    end
+  end
+  if not anchor then
+    local wins = editor_windows(s.tabpage)
+    if wins[1] then
+      anchor = { win = wins[1] }
+    end
+    if not anchor then
+      for _, win in ipairs(api.nvim_tabpage_list_wins(s.tabpage)) do
+        if api.nvim_win_get_config(win).relative == "" then
+          anchor = { win = win }
+          break
+        end
+      end
+    end
+  end
+  local anchor_view = anchor and api.nvim_win_call(anchor.win, function()
+    return vim.fn.winsaveview()
+  end)
+  for _, g in ipairs(s.groups) do
+    if g.hidden then
+      if not anchor then
+        error("cannot restore hidden group without an editor window")
+      end
+      local buf = g.current
+      if not buf or not api.nvim_buf_is_valid(buf) or not vim.tbl_contains(g.buffers, buf) then
+        buf = g.buffers[1]
+      end
+      if not buf then
+        buf = api.nvim_create_buf(true, false)
+        add(g, buf)
+      end
+      local win = api.nvim_win_call(anchor.win, function()
+        return api.nvim_open_win(buf, false, { win = anchor.win, split = g.side == "left" and "left" or "right" })
+      end)
+      g.win, g.hidden, g.current = win, false, buf
+      restore_window(g)
+    end
+  end
+  if anchor then
+    restore_window(anchor, false)
+  end
+  restore_unmanaged_widths(s)
+  if anchor_view then
+    pcall(api.nvim_win_call, anchor.win, function()
+      vim.fn.winrestview(anchor_view)
+    end)
+  end
+  s.fullscreen = false
+  local all_valid = true
+  for _, g in ipairs(s.groups) do
+    if not g.win or not api.nvim_win_is_valid(g.win) then
+      all_valid = false
+    end
+  end
+  if all_valid then
+    sides(s)
+  end
+end
+local function reveal(s, g)
+  if g.hidden then
+    restore_hidden(s)
+  end
+end
 local function ensure(tab, win)
   if tabs[tab] then
     return tabs[tab]
@@ -133,7 +247,7 @@ local function ensure(tab, win)
   if not vim.tbl_contains(wins, win) then
     win = wins[1]
   end
-  local s = { tabpage = tab, active = false, groups = {}, last = nil }
+  local s = { tabpage = tab, active = false, fullscreen = false, groups = {}, last = nil }
   tabs[tab] = s
   if win then
     local g = group(win)
@@ -156,7 +270,11 @@ local function reconcile(tab)
   end
   if not s.active and s.groups[1] then
     local normal = s.groups[1]
-    if api.nvim_win_is_valid(normal.win) and not eligible(api.nvim_win_get_buf(normal.win), normal.win, tab) then
+    if
+      normal.win
+      and api.nvim_win_is_valid(normal.win)
+      and not eligible(api.nvim_win_get_buf(normal.win), normal.win, tab)
+    then
       local editors = editor_windows(tab)
       if editors[1] then
         normal.win = editors[1]
@@ -164,9 +282,18 @@ local function reconcile(tab)
     end
   end
   local gone = {}
+  if s.fullscreen then
+    for _, g in ipairs(s.groups) do
+      if not g.hidden and (not g.win or not api.nvim_win_is_valid(g.win)) then
+        -- A manually closed visible owner must reveal the retained hidden owner.
+        restore_hidden(s)
+        break
+      end
+    end
+  end
   for i = #s.groups, 1, -1 do
     local g = s.groups[i]
-    if not api.nvim_win_is_valid(g.win) then
+    if not g.hidden and (not g.win or not api.nvim_win_is_valid(g.win)) then
       table.remove(s.groups, i)
       table.insert(gone, 1, g)
     else
@@ -193,11 +320,15 @@ local function reconcile(tab)
       end
     end
     for _, g in ipairs(s.groups) do
-      local b = api.nvim_win_get_buf(g.win)
-      if eligible(b, g.win, tab) and not owner(s, b) then
-        add(g, b)
+      if not g.hidden then
+        local b = api.nvim_win_get_buf(g.win)
+        if eligible(b, g.win, tab) and not owner(s, b) then
+          add(g, b)
+        end
+        g.current = vim.tbl_contains(g.buffers, b) and b or nil
+      elseif not vim.tbl_contains(g.buffers, g.current) then
+        g.current = g.buffers[1]
       end
-      g.current = vim.tbl_contains(g.buffers, b) and b or nil
     end
     if not s.active then
       for _, b in ipairs(api.nvim_list_bufs()) do
@@ -211,6 +342,14 @@ local function reconcile(tab)
       for _, g in ipairs(s.groups) do
         if g.id == s.last then
           remembered = g
+        end
+      end
+      if remembered.hidden then
+        for _, g in ipairs(s.groups) do
+          if not g.hidden then
+            remembered = g
+            break
+          end
         end
       end
       for _, b in ipairs(api.nvim_list_bufs()) do
@@ -233,11 +372,17 @@ local function reconcile(tab)
     for i = #s.groups, 1, -1 do
       local g = s.groups[i]
       if #g.buffers == 0 and #s.groups > 1 then
-        local ok = pcall(api.nvim_win_close, g.win, false)
+        if s.fullscreen and not g.hidden then
+          restore_hidden(s)
+        end
+        local ok = g.hidden or pcall(api.nvim_win_close, g.win, false)
         if ok then
           table.remove(s.groups, i)
         end
-      elseif #g.buffers > 0 then
+        if #s.groups < 2 then
+          s.fullscreen = false
+        end
+      elseif #g.buffers > 0 and not g.hidden then
         local shown = api.nvim_win_get_buf(g.win)
         if not vim.tbl_contains(g.buffers, shown) and eligible(shown, nil, tab) then
           local ok = pcall(api.nvim_win_set_buf, g.win, g.buffers[1])
@@ -272,7 +417,10 @@ local function run(reason, tab, fn)
   if not api.nvim_tabpage_is_valid(tab) then
     return false, "invalid tabpage"
   end
-  reconcile(tab)
+  local reconciled, reconcile_error = pcall(reconcile, tab)
+  if not reconciled then
+    return false, tostring(reconcile_error)
+  end
   local before = vim.deepcopy(tabs)
   local before_pending = vim.deepcopy(pending)
   local before_homes = vim.deepcopy(homes)
@@ -288,20 +436,54 @@ local function run(reason, tab, fn)
   busy = true
   local ok, a, b = pcall(fn)
   if not ok or a == false then
+    -- Restore native owners that were hidden before restoring the state snapshot.
+    local snapshot = before[tab]
+    if snapshot then
+      for _, g in ipairs(snapshot.groups) do
+        if not g.hidden and (not g.win or not api.nvim_win_is_valid(g.win)) then
+          local original_side = g.side
+          for _, live in ipairs((tabs[tab] or {}).groups or {}) do
+            if live.id == g.id and live.saved then
+              g.saved = vim.deepcopy(live.saved)
+            end
+          end
+          g.win, g.hidden = nil, true
+          pcall(restore_hidden, { tabpage = tab, groups = { g } })
+          g.side = original_side
+        end
+        if g.win and api.nvim_win_is_valid(g.win) then
+          visible[g.win] = g.current or visible[g.win] or api.nvim_win_get_buf(g.win)
+        end
+      end
+    end
     -- Restore window displays before closing any split created by the operation.
     for win, buf in pairs(visible) do
-      if api.nvim_win_is_valid(win) and api.nvim_buf_is_valid(buf) then
+      if api.nvim_win_is_valid(win) and buf and api.nvim_buf_is_valid(buf) then
         pcall(api.nvim_win_set_buf, win, buf)
       end
     end
     for _, win in ipairs(api.nvim_tabpage_list_wins(tab)) do
       if not visible[win] then
-        pcall(api.nvim_win_close, win, false)
+        local buf = api.nvim_win_get_buf(win)
+        local bufhidden = vim.bo[buf].bufhidden
+        vim.bo[buf].bufhidden = "hide"
+        pcall(api.nvim_win_hide, win)
+        if api.nvim_buf_is_valid(buf) then
+          vim.bo[buf].bufhidden = bufhidden
+        end
       end
     end
     for _, buf in ipairs(api.nvim_list_bufs()) do
       if not known[buf] and not vim.bo[buf].modified then
         pcall(api.nvim_buf_delete, buf, { force = false })
+      end
+    end
+    -- A failed reveal can have created windows for previously hidden groups.
+    if snapshot and snapshot.fullscreen then
+      for _, g in ipairs(snapshot.groups) do
+        if g.hidden then
+          g.win = nil
+        end
       end
     end
     tabs = before
@@ -355,6 +537,14 @@ local function target(opts, remember)
   return s, g, tab
 end
 local function display(g, buf, focus)
+  for _, s in pairs(tabs) do
+    for _, candidate in ipairs(s.groups) do
+      if candidate == g then
+        reveal(s, g)
+        break
+      end
+    end
+  end
   api.nvim_win_set_buf(g.win, buf)
   g.current = buf
   if focus then
@@ -370,17 +560,25 @@ end
 local function vacate(s, g, buf)
   local replacement = g.buffers[1]
   if replacement then
-    if api.nvim_win_get_buf(g.win) == buf then
+    if g.hidden then
+      g.current = replacement
+    elseif api.nvim_win_get_buf(g.win) == buf then
       display(g, replacement, false)
     end
   elseif #s.groups > 1 then
-    api.nvim_win_close(g.win, false)
+    if s.fullscreen and not g.hidden then
+      restore_hidden(s)
+    end
+    if not g.hidden then
+      api.nvim_win_close(g.win, false)
+    end
     for i, v in ipairs(s.groups) do
       if v == g then
         table.remove(s.groups, i)
         break
       end
     end
+    s.fullscreen = false
     sides(s)
   else
     empty_buffer(g)
@@ -405,13 +603,20 @@ end
 function M.get_state(opts)
   local tab = tabid(opts)
   if not api.nvim_tabpage_is_valid(tab) then
-    return { enabled = enabled, tabpage = tab, active = false, groups = {}, owners = {} }
+    return { enabled = enabled, tabpage = tab, active = false, fullscreen = false, groups = {}, owners = {} }
   end
   local s = ensure(tab)
   if not busy then
     reconcile(tab)
   end
-  local out = { enabled = enabled, tabpage = tab, active = s.active, groups = vim.deepcopy(s.groups), owners = {} }
+  local out = {
+    enabled = enabled,
+    tabpage = tab,
+    active = s.active,
+    fullscreen = s.fullscreen == true,
+    groups = vim.deepcopy(s.groups),
+    owners = {},
+  }
   local focused = bywin(s, api.nvim_get_current_win())
   out.focused = focused and focused.id or s.last
   for _, g in ipairs(s.groups) do
@@ -449,6 +654,10 @@ function M.register(buf, opts)
     pending[buf] = nil
     if src and src ~= g then
       if not newly_added and cfg.behavior.existing_buffer == "focus_owner" then
+        if src.hidden then
+          display(src, buf, true)
+          s.last = src.id
+        end
         return buf
       end
       return transfer(s, src, g, buf, false)
@@ -511,6 +720,7 @@ function M.move(direction, opts)
     if not g then
       return false, err or "no managed editor window"
     end
+    reveal(s, g)
     local buf = opts.buf or api.nvim_win_get_buf(g.win)
     if not eligible(buf, g.win, tab) then
       return false, "buffer is excluded or invalid"
@@ -622,7 +832,7 @@ function M.close(buf, opts)
         break
       end
     end
-    if api.nvim_win_get_buf(g.win) == buf then
+    if not g.hidden and api.nvim_win_get_buf(g.win) == buf then
       if replacement then
         display(g, replacement, false)
       elseif #s.groups == 1 then
@@ -641,6 +851,190 @@ function M.close(buf, opts)
     vacate(s, g, buf)
     return buf
   end)
+end
+function M.close_others(opts)
+  opts = opts or {}
+  local tab = tabid(opts)
+  return run("close_others", tab, function()
+    local s, g, _, err = target(opts)
+    if not g then
+      return false, err or "no managed editor window"
+    end
+    local keep = g.current
+    if not g.hidden then
+      keep = api.nvim_win_get_buf(g.win)
+    end
+    if not keep or not vim.tbl_contains(g.buffers, keep) or not eligible(keep, nil, tab) then
+      return false, "current buffer is not managed by the selected group"
+    end
+    local buffers = {}
+    for _, buf in ipairs(g.buffers) do
+      if buf ~= keep then
+        buffers[#buffers + 1] = buf
+      end
+    end
+    local save = opts.save
+    if save == nil then
+      save = cfg.closing.save_others and not opts.force
+    end
+    -- Finish every save before deleting any member, so write failures leave
+    -- the whole group open. The current buffer never participates in saves.
+    for _, buf in ipairs(buffers) do
+      if api.nvim_buf_is_valid(buf) and vim.bo[buf].modified then
+        if save then
+          api.nvim_buf_call(buf, function()
+            vim.cmd.write()
+          end)
+        elseif not opts.force then
+          return false, "buffer has unsaved changes"
+        end
+      end
+    end
+    for _, buf in ipairs(buffers) do
+      if api.nvim_buf_is_valid(buf) and vim.bo[buf].modified and not opts.force then
+        return false, "buffer has unsaved changes"
+      end
+    end
+    if not api.nvim_buf_is_valid(keep) or owner(s, keep) ~= g then
+      return false, "current buffer is no longer managed by the selected group"
+    end
+    for _, buf in ipairs(buffers) do
+      if api.nvim_buf_is_valid(buf) then
+        api.nvim_buf_delete(buf, { force = opts.force == true })
+      end
+      pending[buf], homes[buf] = nil, nil
+      for _, state in pairs(tabs) do
+        for _, owned in ipairs(state.groups) do
+          remove(owned, buf)
+        end
+      end
+    end
+    g.current = keep
+    return buffers
+  end)
+end
+function M.close_group(opts)
+  opts = opts or {}
+  local tab = tabid(opts)
+  return run("close_group", tab, function()
+    local s, g, _, err = target(opts)
+    if not g then
+      return false, err or "no managed editor window"
+    end
+    local buffers = vim.deepcopy(g.buffers)
+    for _, buf in ipairs(buffers) do
+      if api.nvim_buf_is_valid(buf) and vim.bo[buf].modified and not opts.force then
+        return false, "buffer has unsaved changes"
+      end
+    end
+    if cfg.closing.last_buffer == "quit" then
+      local remaining = false
+      for _, buf in ipairs(api.nvim_list_bufs()) do
+        if not vim.tbl_contains(buffers, buf) and vim.bo[buf].buflisted and vim.bo[buf].buftype == "" then
+          remaining = true
+          break
+        end
+      end
+      if not remaining then
+        vim.cmd(opts.force and "qall!" or "qall")
+        return buffers
+      end
+    end
+    if s.fullscreen and not g.hidden then
+      restore_hidden(s)
+    end
+    if not g.hidden then
+      -- Native deletion must not install another owner's buffer in this window.
+      api.nvim_win_set_buf(g.win, api.nvim_create_buf(false, true))
+    end
+    for _, buf in ipairs(buffers) do
+      if api.nvim_buf_is_valid(buf) then
+        api.nvim_buf_delete(buf, { force = opts.force == true })
+      end
+      pending[buf], homes[buf] = nil, nil
+      for _, state in pairs(tabs) do
+        for _, owned in ipairs(state.groups) do
+          remove(owned, buf)
+        end
+      end
+    end
+    if #s.groups == 1 then
+      local replacement = group(g.win)
+      s.groups, s.last, s.fullscreen = { replacement }, replacement.id, false
+      empty_buffer(replacement)
+      sides(s)
+    else
+      vacate(s, g)
+    end
+    return buffers
+  end)
+end
+function M.toggle_fullscreen(opts)
+  opts = opts or {}
+  local tab = tabid(opts)
+  local ok, result = run("toggle_fullscreen", tab, function()
+    local s, g, _, err = target(opts)
+    if not g then
+      return false, err or "no managed editor window"
+    end
+    if s.fullscreen then
+      restore_hidden(s)
+      api.nvim_set_current_win(g.win)
+      s.last = g.id
+      return { fullscreen = false }
+    end
+    if #s.groups == 1 then
+      return { fullscreen = false }
+    end
+    if #s.groups ~= 2 then
+      return false, "fullscreen requires two initialized groups"
+    end
+    if #editor_windows(tab) ~= 2 then
+      return false, "fullscreen requires exactly two editor windows"
+    end
+    for _, owned in ipairs(s.groups) do
+      if
+        owned.hidden
+        or not owned.win
+        or not api.nvim_win_is_valid(owned.win)
+        or not eligible(api.nvim_win_get_buf(owned.win), owned.win, tab)
+      then
+        return false, "fullscreen requires two managed editor windows"
+      end
+    end
+    s.unmanaged_widths = {}
+    for _, win in ipairs(api.nvim_tabpage_list_wins(tab)) do
+      if not bywin(s, win) and api.nvim_win_get_config(win).relative == "" then
+        s.unmanaged_widths[win] = api.nvim_win_get_width(win)
+      end
+    end
+    for _, owned in ipairs(s.groups) do
+      save_window(owned)
+    end
+    for _, owned in ipairs(s.groups) do
+      if owned ~= g then
+        local buf = api.nvim_win_get_buf(owned.win)
+        local bufhidden = vim.bo[buf].bufhidden
+        vim.bo[buf].bufhidden = "hide"
+        local ok, failure = pcall(api.nvim_win_hide, owned.win)
+        if api.nvim_buf_is_valid(buf) then
+          vim.bo[buf].bufhidden = bufhidden
+        end
+        if not ok then
+          error(failure)
+        end
+        owned.win, owned.hidden = nil, true
+      end
+    end
+    restore_unmanaged_widths(s)
+    s.fullscreen, s.last = true, g.id
+    api.nvim_set_current_win(g.win)
+    return { fullscreen = true }
+  end)
+  if not ok then
+    return false, result
+  end
+  return true, result.fullscreen
 end
 local function entered()
   if not enabled or busy then
@@ -665,6 +1059,7 @@ local function entered()
       pending[buf] = nil
       if src and src ~= g then
         remove(src, buf)
+        vacate(s, src, buf)
       end
       add(g, buf)
       g.current = buf
@@ -712,14 +1107,19 @@ local function deferred(reason)
       return
     end
     busy = true
-    for tab in pairs(tabs) do
-      if api.nvim_tabpage_is_valid(tab) then
-        reconcile(tab)
-      else
-        tabs[tab] = nil
+    local ok, err = pcall(function()
+      for tab in pairs(tabs) do
+        if api.nvim_tabpage_is_valid(tab) then
+          reconcile(tab)
+        else
+          tabs[tab] = nil
+        end
       end
-    end
+    end)
     busy = false
+    if not ok then
+      vim.notify("buffer_groups: " .. tostring(err), vim.log.levels.ERROR)
+    end
     if api.nvim_tabpage_is_valid(api.nvim_get_current_tabpage()) then
       event(api.nvim_get_current_tabpage(), reason)
     end
@@ -768,6 +1168,15 @@ local function install_maps()
     end,
     close = function()
       return M.close()
+    end,
+    close_group = function()
+      return M.close_group()
+    end,
+    close_others = function()
+      return M.close_others()
+    end,
+    toggle_fullscreen = function()
+      return M.toggle_fullscreen()
     end,
   }
   for name, lhs in pairs(cfg.keymaps) do
@@ -823,6 +1232,19 @@ function M.disable()
   if not enabled then
     return true, M
   end
+  local was_busy = busy
+  busy = true
+  local ok, err = pcall(function()
+    for tab, state in pairs(tabs) do
+      if api.nvim_tabpage_is_valid(tab) and state.fullscreen then
+        restore_hidden(state)
+      end
+    end
+  end)
+  busy = was_busy
+  if not ok then
+    return false, tostring(err)
+  end
   enabled = false
   api.nvim_create_augroup("BufferGroups", { clear = true })
   restore_maps()
@@ -835,7 +1257,10 @@ function M.setup(opts)
     error("buffer_groups requires Neovim >= 0.11", 2)
   end
   local resolved = config.resolve(opts)
-  M.disable()
+  local disabled, err = M.disable()
+  if not disabled then
+    error("buffer_groups: " .. tostring(err), 2)
+  end
   cfg = resolved
   api.nvim_create_user_command("BufferGroupsMove", function(o)
     report(function()
@@ -863,11 +1288,28 @@ function M.setup(opts)
       return M.close(nil, { force = o.bang })
     end)
   end, { force = true, bang = true })
+  api.nvim_create_user_command("BufferGroupsCloseGroup", function(o)
+    report(function()
+      return M.close_group({ force = o.bang })
+    end)
+  end, { force = true, bang = true })
+  api.nvim_create_user_command("BufferGroupsCloseOthers", function(o)
+    report(function()
+      return M.close_others({ force = o.bang })
+    end)
+  end, { force = true, bang = true })
+  api.nvim_create_user_command("BufferGroupsToggleFullscreen", function()
+    report(function()
+      return M.toggle_fullscreen()
+    end)
+  end, { force = true })
   api.nvim_create_user_command("BufferGroupsEnable", function()
     M.enable()
   end, { force = true })
   api.nvim_create_user_command("BufferGroupsDisable", function()
-    M.disable()
+    report(function()
+      return M.disable()
+    end)
   end, { force = true })
   M.enable()
   return M

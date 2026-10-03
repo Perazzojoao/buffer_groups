@@ -11,7 +11,9 @@ Local registration: >lua
   vim.opt.runtimepath:prepend(vim.fn.expand('~/Dev/Personal/buffer_groups'))
   require('buffer_groups').setup({
     keymaps = { move_left = '<leader>h', move_right = '<leader>l',
-                previous = '<A-h>', next = '<A-l>' },
+                previous = '<A-h>', next = '<A-l>',
+                close_group = '<leader>kg', close_others = '<leader>ko',
+                toggle_fullscreen = '<leader>mm' },
   })
 <
 Remove this registration and restart to stop loading the local plugin.
@@ -20,7 +22,9 @@ Remove this registration and restart to stop loading the local plugin.
 OPTIONS                                              *buffer_groups.setup()*
 
 setup({opts}) is idempotent. No default keymaps. Available mapping names:
-move_left, move_right, previous, next, close (normal mode).
+move_left, move_right, previous, next, close, close_group, close_others,
+toggle_fullscreen
+(normal mode).
 
 exclude.floating=true is required: only normal windows can own layout groups.
 exclude.unlisted=true; default filetypes are snacks_layout_box/snacks_picker_list;
@@ -35,6 +39,7 @@ behavior.existing_buffer='focus_owner' ('transfer' also supported)
 behavior.single_buffer_split='require_two' ('new_buffer' also supported)
 behavior.manual_window_close='merge'
 closing.last_buffer='empty' ('quit' also supported)
+closing.save_others=false (save modified targets before close_others)
 
 Initialize with two eligible buffers; otherwise leave layout unchanged. Existing
 pairs are adopted. More than two eligible windows prevents initialization.
@@ -43,6 +48,28 @@ Moving buffers appends to the destination list and removes source membership;
 empty source closes. Manual window close merges into the surviving group.
 Unsaved changes are preserved by moving; close requires explicit force to
 discard them. Rename/unload keep ownership. Auxiliary views remain excluded.
+
+close_group() checks all members for unsaved changes before deleting any, then
+closes the focused group. force=true explicitly discards modifications. The last
+group follows closing.last_buffer; 'empty' keeps a new editable replacement when
+the final editor window is required. Closing the visible fullscreen group first
+reveals the other group.
+
+close_others() closes all other members of the focused group, keeping its current
+buffer, split and fullscreen state. Other groups are unaffected. A one-buffer
+group succeeds with an empty list. Unsaved changes are refused by default.
+closing.save_others=true or save=true saves all modified targets before deleting
+any. A write failure keeps all buffers open; earlier writes may already be saved.
+The current buffer is never saved. force=true skips automatic saving and discards
+modifications; explicit save=true still requests saving even when forced.
+
+toggle_fullscreen() expands the focused group into the editing area; its
+partner's split is hidden without deleting buffers. With one group it returns
+true,false without changing the layout. Extra eligible editing splits cause an
+error; fullscreen needs the two initialized groups to be the only editor windows.
+Another call restores the split and its displayed buffer. Excluded sidebars stay
+in place. Moving into the hidden group or opening its buffer with focus_owner
+reveals it. New files and local cycling continue in the visible group.
 
 ==============================================================================
 API                                                    *buffer_groups-api*
@@ -53,16 +80,23 @@ require('buffer_groups') exposes:
   open(bufnr, {win?,tabpage?,group?,focus?})
   register(bufnr, {win?,tabpage?,group?})
   close(bufnr, {force?,tabpage?})
+  close_group({win?,tabpage?,group?,force?})
+  close_others({win?,tabpage?,group?,save?,force?})
+  toggle_fullscreen({win?,tabpage?})
   get_state({tabpage?})
   get_owner(bufnr, {tabpage?})
   enable(), disable(), is_enabled()
 
 Mutations return true,result or false,error. Commands report errors. Queries
-return defensive copies. State: {enabled,tabpage,active,focused,groups,owners}.
-Group: {id,win,side,buffers,current}. Side: left/right/single. Stable group IDs
+return defensive copies. State:
+{enabled,tabpage,active,fullscreen,focused,groups,owners}.
+Group: {id,win,side,buffers,current,hidden}. Side: left/right/single. Stable group IDs
 identify ownership independently of spatial positions.
+Hidden groups have win=nil; restored splits receive new window IDs. Read fresh
+snapshots when resolving destinations. close_group/close_others return closed buffer IDs;
+toggle_fullscreen returns the new fullscreen boolean.
 
-disable() leaves windows/buffers intact and restores owned mappings only if
+disable() reveals hidden groups, preserves buffers and restores owned mappings only if
 the current mapping is still installed by the plugin. enable() starts fresh
 tracking; split initialization remains lazy.
 
@@ -73,6 +107,9 @@ COMMANDS                                                *:BufferGroupsMove*
 :BufferGroupsNext              Cycle forward in the focused group.
 :BufferGroupsPrevious          Cycle backwards in the focused group.
 :BufferGroupsClose[!]          Close buffer; ! explicitly discards changes.
+:BufferGroupsCloseGroup[!]     Close the focused group; ! discards changes.
+:BufferGroupsCloseOthers[!]    Close other group buffers; ! discards changes.
+:BufferGroupsToggleFullscreen  Hide/reveal the other group without closing buffers.
 :BufferGroupsEnable            Enable observers/configured mappings.
 :BufferGroupsDisable           Disable while preserving windows and buffers.
 
@@ -91,6 +128,8 @@ Compose existing setup options, before one Bufferline setup call: >lua
 <
 Core functions without Bufferline. Adapter displays ownership in a single global
 bar, preserves/composes host options and callbacks, and focuses owner on click.
+Fullscreen filters out the hidden group's buffer tabs; restoring its split
+reveals those tabs again. The original custom_filter is still respected.
 Core disable falls back to original callbacks. Pin/manual sorting/native cycle
 operate on Bufferline's global list and are outside the managed v1 behavior.
 extend(config, { managed_order = false }) retains Bufferline's native sorter.

@@ -18,6 +18,9 @@ require("buffer_groups").setup({
     move_right = "<leader>l",
     previous = "<A-h>",
     next = "<A-l>",
+    close_group = "<leader>kg",
+    close_others = "<leader>ko",
+    toggle_fullscreen = "<leader>mm",
   },
 })
 ```
@@ -72,11 +75,53 @@ Closing a managed window manually merges its buffers into the remaining group.
 Extra windows opened while partitioned remain unmanaged. No groups are restored
 across Neovim restarts.
 
+### Close a group
+
+`close_group()` closes every buffer in the focused group, then closes that
+group's split. It checks all members for unsaved changes before deleting any;
+`close_group({ force = true })` explicitly discards those changes. The other
+group keeps its buffers. Closing the visible group while fullscreen reveals
+the other group first.
+
+The last group follows `closing.last_buffer`: `"quit"` exits when no other listed
+editing buffers remain globally; the default `"empty"` leaves an editable empty
+replacement when Neovim needs a final editor window.
+
+### Fullscreen toggle
+
+`toggle_fullscreen()` expands the focused group into the editing area by hiding
+the other group's split. With only one group, it returns `true, false` without
+changing the layout. Two initialized groups must be the only eligible editing
+windows; additional editing splits cause an error. Excluded sidebars
+and auxiliary windows stay in place. All buffers, their order and their group
+membership remain intact. Calling it again restores the hidden split and its
+displayed buffer.
+
+Moving a buffer to the hidden group or selecting a hidden group's buffer with
+the default owner policy reveals that group. Local cycling and newly opened
+buffers continue to use the visible group. Disabling the plugin restores hidden
+groups before releasing their state.
+
+### Close other buffers in a group
+
+`close_others()` keeps the focused group's current buffer and closes its other
+members. The group's split, fullscreen state and the other group's buffers stay
+intact. With only one member, it succeeds with an empty list.
+
+By default it refuses unsaved changes. Set `closing.save_others = true` to save
+modified target buffers first, or override it for one call with
+`close_others({ save = true })`. Every save must succeed before deletion starts;
+a write failure keeps all buffers open, although earlier successful writes stay
+saved. The current buffer is never saved or closed by this method.
+`close_others({ force = true })` skips automatic saving and discards modifications;
+an explicit `save = true` still requests saving even when forced.
+
 ## Configuration
 
 ```lua
 require("buffer_groups").setup({
-  keymaps = {}, -- Optional keys: move_left, move_right, previous, next, close.
+  keymaps = {}, -- Optional keys: move_left, move_right, previous, next, close,
+                -- close_group, close_others, toggle_fullscreen.
   exclude = {
     floating = true, -- Floating windows cannot be group owners.
     unlisted = true,
@@ -99,6 +144,7 @@ require("buffer_groups").setup({
   },
   closing = {
     last_buffer = "empty", -- Alternative: "quit".
+    save_others = false, -- Save modified buffers before close_others().
   },
 })
 ```
@@ -127,6 +173,9 @@ groups.cycle(1) -- Use -1 to cycle backwards.
 groups.open(bufnr, { win = editor_win })
 groups.register(bufnr, { win = editor_win })
 groups.close(bufnr, { force = false })
+groups.close_group({ force = false })
+groups.close_others({ save = true, force = false })
+groups.toggle_fullscreen()
 
 local owner = groups.get_owner(bufnr, { tabpage = tabpage })
 local state = groups.get_state({ tabpage = tabpage })
@@ -138,16 +187,28 @@ local enabled = groups.is_enabled()
 Mutations return `true, result` or `false, error`. Commands notify errors.
 `get_state()` and `get_owner()` return copies; changing them never changes the
 plugin. State contains `enabled`, `tabpage`, `active`, `focused`, `groups` and
-`owners`. Each group has `id`, `win`, `side`, `buffers` and `current`. `side` is
+`owners`, plus the boolean `fullscreen`. Each group has `id`, `win`, `side`,
+`buffers`, `current` and the boolean `hidden`. `side` is
 `left`, `right` or `single`; IDs stay stable while groups exist. Options may use
 `group` to select a group ID explicitly.
 
+`close_group({ win?, tabpage?, group?, force? })` returns the closed buffer IDs.
+`close_others({ win?, tabpage?, group?, save?, force? })` returns the closed buffer IDs,
+excluding the selected group's current buffer.
+`toggle_fullscreen({ win?, tabpage? })` returns the new fullscreen boolean.
+These methods operate on an eligible editor group; commands invoked from excluded views
+are refused. Hidden groups have `win = nil`. Restoring a split creates a new
+window ID; integrations should refresh it through `get_owner()` or `get_state()`.
+
 `disable()` preserves all windows and buffers, removes observer isolation and
-restores prior keymaps if they have not been replaced by the user. Commands stay
+reveals any hidden groups, and restores prior keymaps if they have not been
+replaced by the user. Commands stay
 available for reactivation. `setup()` is idempotent.
 
 Commands: `:BufferGroupsMove left|right`, `:BufferGroupsNext`,
-`:BufferGroupsPrevious`, `:BufferGroupsClose[!]`, `:BufferGroupsEnable`,
+`:BufferGroupsPrevious`, `:BufferGroupsClose[!]`, `:BufferGroupsCloseGroup[!]`,
+`:BufferGroupsCloseOthers[!]`,
+`:BufferGroupsToggleFullscreen`, `:BufferGroupsEnable`,
 `:BufferGroupsDisable`.
 
 Subscribe to committed state changes without accessing plugin internals:
@@ -175,6 +236,8 @@ require("bufferline").setup(config)
 
 The adapter copies the configuration, shows Left/Right owner groups in one global
 bar, follows the group's cycle order, and directs clicks to the owning split.
+While fullscreen, its filter hides every buffer belonging to the hidden group;
+restoring the split reveals those tabs again without reopening buffers.
 Existing filters, visual options and close callbacks are preserved/composed.
 It never calls Bufferline setup itself. Disabling the core restores original
 callback behavior; unregistering the local plugin keeps the config above usable.

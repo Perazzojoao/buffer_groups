@@ -271,14 +271,21 @@ local function add_owner_groups(groups_config, names, core, snapshots)
   return groups_config
 end
 
-local function compose_filter(original_filter)
+local function compose_filter(original_filter, core)
   return function(bufnr, buf_numbers)
     if type(original_filter) == "function" and not original_filter(bufnr, buf_numbers) then
       return false
     end
 
-    -- The owner matchers below query only the current tab. Unmanaged buffers
-    -- and buffers owned in other tabs retain Bufferline's global visibility.
+    if get_enabled(core) then
+      local owner = get_owner(core, bufnr)
+      if owner and owner.hidden then
+        return false
+      end
+    end
+
+    -- Query only the current tab. Unmanaged buffers and buffers owned in other
+    -- tabs retain Bufferline's global visibility.
     return true
   end
 end
@@ -397,7 +404,7 @@ function M.extend(full_config, adapter_opts)
     options.groups = groups_config
 
     local original_filter = options.custom_filter
-    options.custom_filter = compose_filter(original_filter)
+    options.custom_filter = compose_filter(original_filter, core)
 
     if not (adapter_opts and adapter_opts.managed_order == false) then
       local sorter, err = compose_sorter(options.sort_by, snapshots, options.mode)
