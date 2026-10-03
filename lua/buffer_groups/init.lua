@@ -5,6 +5,36 @@ local cfg = config.resolve()
 local enabled, busy, tabs, next_id, maps = false, false, {}, 0, {}
 local pending = {}
 local homes = {}
+local WINBAR_MODULE = "buffer_groups.ui.winbar"
+local function loaded_winbar()
+  return package.loaded[WINBAR_MODULE]
+end
+local function effective_winbar_enabled()
+  if not enabled then
+    return false
+  end
+  local ui = loaded_winbar()
+  if not ui or type(ui.is_enabled) ~= "function" then
+    return false
+  end
+  local ok, value = pcall(ui.is_enabled)
+  return ok and value == true
+end
+local function winbar_hook(name, ...)
+  local ui = loaded_winbar()
+  if not ui or type(ui[name]) ~= "function" then
+    return nil
+  end
+  local ok, value = pcall(ui[name], ...)
+  if ok then
+    return value
+  end
+end
+local function reveal_group_tabs(g)
+  if cfg.winbar.reveal_on_use then
+    g.tabs_visible = true
+  end
+end
 local function tabid(opts)
   local t = opts and opts.tabpage or api.nvim_get_current_tabpage()
   if t == 0 then
@@ -58,7 +88,15 @@ local function editor_windows(tab)
 end
 local function group(win)
   next_id = next_id + 1
-  return { id = next_id, win = win, side = "single", buffers = {}, current = nil, hidden = false }
+  return {
+    id = next_id,
+    win = win,
+    side = "single",
+    buffers = {},
+    current = nil,
+    hidden = false,
+    tabs_visible = true,
+  }
 end
 local function owner(s, buf)
   for _, g in ipairs(s.groups) do
@@ -146,6 +184,10 @@ local function save_window(g)
       end
     end
   end
+  local original_winbar = winbar_hook("original_option", g.win)
+  if original_winbar ~= nil then
+    g.saved.options.winbar = original_winbar
+  end
 end
 local function restore_window(g, restore_view)
   if not g.saved then
@@ -154,6 +196,7 @@ local function restore_window(g, restore_view)
   for name, value in pairs(g.saved.options) do
     pcall(api.nvim_set_option_value, name, value, { win = g.win, scope = "local" })
   end
+  winbar_hook("after_restore", g)
   pcall(api.nvim_win_set_width, g.win, g.saved.width)
   pcall(api.nvim_win_set_height, g.win, g.saved.height)
   if restore_view ~= false and api.nvim_win_get_buf(g.win) == g.saved.buf then
@@ -519,10 +562,11 @@ local function target(opts, remember)
     g.win = win
     g.current = api.nvim_win_get_buf(win)
   end
-  if opts and opts.group then
+  if opts and (opts.group_id ~= nil or opts.group ~= nil) then
+    local group_id = opts.group_id ~= nil and opts.group_id or opts.group
     g = nil
     for _, v in ipairs(s.groups) do
-      if v.id == opts.group then
+      if v.id == group_id then
         g = v
       end
     end
@@ -547,6 +591,7 @@ local function display(g, buf, focus)
   end
   api.nvim_win_set_buf(g.win, buf)
   g.current = buf
+  reveal_group_tabs(g)
   if focus then
     api.nvim_set_current_win(g.win)
   end
@@ -603,7 +648,15 @@ end
 function M.get_state(opts)
   local tab = tabid(opts)
   if not api.nvim_tabpage_is_valid(tab) then
-    return { enabled = enabled, tabpage = tab, active = false, fullscreen = false, groups = {}, owners = {} }
+    return {
+      enabled = enabled,
+      winbar_enabled = effective_winbar_enabled(),
+      tabpage = tab,
+      active = false,
+      fullscreen = false,
+      groups = {},
+      owners = {},
+    }
   end
   local s = ensure(tab)
   if not busy then
@@ -611,6 +664,7 @@ function M.get_state(opts)
   end
   local out = {
     enabled = enabled,
+    winbar_enabled = effective_winbar_enabled(),
     tabpage = tab,
     active = s.active,
     fullscreen = s.fullscreen == true,
@@ -636,6 +690,103 @@ function M.get_owner(buf, opts)
 end
 function M.is_enabled()
   return enabled
+end
+function M.is_winbar_enabled()
+  return effective_winbar_enabled()
+end
+function M.set_winbar_enabled(value)
+  if type(value) ~= "boolean" then
+    return false, "winbar enabled state must be boolean"
+  end
+  local ui = loaded_winbar()
+  if value and not ui then
+    local ok, result = pcall(require, WINBAR_MODULE)
+    if not ok then
+      return false, tostring(result)
+    end
+    ui = result
+  end
+  if not ui then
+    cfg.winbar.enabled = false
+    event(tabid(), "set_winbar_enabled")
+    return true, false
+  end
+  if value and type(ui.configure) == "function" then
+    local ok, result, err = pcall(ui.configure, cfg.winbar)
+    if not ok then
+      return false, tostring(result)
+    end
+    if result == false then
+      return false, tostring(err or "could not configure winbar")
+    end
+  end
+  if type(ui.set_enabled) ~= "function" then
+    return false, "winbar module does not support enabling"
+  end
+  local ok, success, result = pcall(ui.set_enabled, value)
+  if not ok then
+    return false, tostring(success)
+  end
+  if not success then
+    return success, result
+  end
+  cfg.winbar.enabled = value
+  event(tabid(), "set_winbar_enabled")
+  return success, result
+end
+function M.toggle_winbar()
+  return M.set_winbar_enabled(not M.is_winbar_enabled())
+end
+local function group_tabs_target(opts, tab)
+  local target_opts = opts
+  if opts and opts.win == nil and (opts.tabpage ~= nil or opts.group_id ~= nil or opts.group ~= nil) then
+    local win = opts.tabpage ~= nil and api.nvim_tabpage_get_win(tab) or api.nvim_get_current_win()
+    target_opts = vim.tbl_extend("force", {}, opts, { win = win })
+  end
+  return target(target_opts, true)
+end
+function M.set_group_tabs_visible(visible, opts)
+  if type(visible) ~= "boolean" then
+    return false, "group tabs visibility must be boolean"
+  end
+  opts = opts or {}
+  if type(opts) ~= "table" then
+    return false, "group tabs options must be a table"
+  end
+  local tab = tabid(opts)
+  local ok, result = run("set_group_tabs_visible", tab, function()
+    local s, g, _, err = group_tabs_target(opts, tab)
+    if not g then
+      local requested = opts.group_id ~= nil or opts.group ~= nil
+      return false, err or (requested and "group_id was not found" or "no managed editor group")
+    end
+    g.tabs_visible = visible
+    return { tabs_visible = visible }
+  end)
+  if not ok then
+    return false, result
+  end
+  return true, result.tabs_visible
+end
+function M.toggle_group_tabs(opts)
+  opts = opts or {}
+  if type(opts) ~= "table" then
+    return false, "group tabs options must be a table"
+  end
+  local tab = tabid(opts)
+  local ok, result = run("toggle_group_tabs", tab, function()
+    local s, g, _, err = group_tabs_target(opts, tab)
+    if not g then
+      local requested = opts.group_id ~= nil or opts.group ~= nil
+      return false, err or (requested and "group_id was not found" or "no managed editor group")
+    end
+    g.tabs_visible = not g.tabs_visible
+    return { tabs_visible = g.tabs_visible }
+  end)
+  if not ok then
+    return false, result
+  end
+  return true, result.tabs_visible
 end
 function M.register(buf, opts)
   opts = opts or {}
@@ -663,6 +814,9 @@ function M.register(buf, opts)
       return transfer(s, src, g, buf, false)
     end
     add(g, buf)
+    if newly_added then
+      reveal_group_tabs(g)
+    end
     return buf
   end)
 end
@@ -979,6 +1133,7 @@ function M.toggle_fullscreen(opts)
     end
     if s.fullscreen then
       restore_hidden(s)
+      reveal_group_tabs(g)
       api.nvim_set_current_win(g.win)
       s.last = g.id
       return { fullscreen = false }
@@ -1052,6 +1207,7 @@ local function entered()
   if not g or not eligible(buf, win, tab) then
     return
   end
+  reveal_group_tabs(g)
   busy = true
   local ok, err = pcall(function()
     local src = owner(s, buf)
@@ -1178,6 +1334,12 @@ local function install_maps()
     toggle_fullscreen = function()
       return M.toggle_fullscreen()
     end,
+    toggle_winbar = function()
+      return M.toggle_winbar()
+    end,
+    toggle_tabs = function()
+      return M.toggle_group_tabs()
+    end,
   }
   for name, lhs in pairs(cfg.keymaps) do
     local previous = global_map(lhs)
@@ -1225,6 +1387,7 @@ function M.enable()
     end,
   })
   install_maps()
+  winbar_hook("resume")
   event(api.nvim_get_current_tabpage(), "enable")
   return true, M
 end
@@ -1245,6 +1408,7 @@ function M.disable()
   if not ok then
     return false, tostring(err)
   end
+  winbar_hook("suspend")
   enabled = false
   api.nvim_create_augroup("BufferGroups", { clear = true })
   restore_maps()
@@ -1262,6 +1426,25 @@ function M.setup(opts)
     error("buffer_groups: " .. tostring(err), 2)
   end
   cfg = resolved
+  local ui = loaded_winbar()
+  if resolved.winbar.enabled or (opts and opts.winbar ~= nil) or ui then
+    if not ui then
+      local ok, result = pcall(require, WINBAR_MODULE)
+      if not ok then
+        error("buffer_groups: " .. tostring(result), 2)
+      end
+      ui = result
+    end
+    if type(ui.configure) == "function" then
+      local ok, result, detail = pcall(ui.configure, cfg.winbar)
+      if not ok then
+        error("buffer_groups: " .. tostring(result), 2)
+      end
+      if result == false then
+        error("buffer_groups: " .. tostring(detail or "could not configure winbar"), 2)
+      end
+    end
+  end
   api.nvim_create_user_command("BufferGroupsMove", function(o)
     report(function()
       return M.move(o.args)
@@ -1303,6 +1486,33 @@ function M.setup(opts)
       return M.toggle_fullscreen()
     end)
   end, { force = true })
+  api.nvim_create_user_command("BufferGroupsWinbar", function(o)
+    local actions = {
+      enable = function()
+        return M.set_winbar_enabled(true)
+      end,
+      disable = function()
+        return M.set_winbar_enabled(false)
+      end,
+      toggle = function()
+        return M.toggle_winbar()
+      end,
+    }
+    local action = actions[o.args]
+    if not action then
+      report(function()
+        return false, "expected enable, disable, or toggle"
+      end)
+      return
+    end
+    report(action)
+  end, {
+    nargs = 1,
+    force = true,
+    complete = function()
+      return { "enable", "disable", "toggle" }
+    end,
+  })
   api.nvim_create_user_command("BufferGroupsEnable", function()
     M.enable()
   end, { force = true })

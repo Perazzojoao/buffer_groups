@@ -121,7 +121,7 @@ an explicit `save = true` still requests saving even when forced.
 ```lua
 require("buffer_groups").setup({
   keymaps = {}, -- Optional keys: move_left, move_right, previous, next, close,
-                -- close_group, close_others, toggle_fullscreen.
+                -- close_group, close_others, toggle_fullscreen, toggle_winbar, toggle_tabs.
   exclude = {
     floating = true, -- Floating windows cannot be group owners.
     unlisted = true,
@@ -179,6 +179,10 @@ groups.toggle_fullscreen()
 
 local owner = groups.get_owner(bufnr, { tabpage = tabpage })
 local state = groups.get_state({ tabpage = tabpage })
+groups.set_winbar_enabled(false)
+local winbar_enabled = groups.is_winbar_enabled()
+groups.set_group_tabs_visible(false, { group_id = group_id, tabpage = tabpage })
+groups.toggle_group_tabs() -- Defaults to the focused group and tabpage.
 groups.disable()
 groups.enable()
 local enabled = groups.is_enabled()
@@ -186,9 +190,9 @@ local enabled = groups.is_enabled()
 
 Mutations return `true, result` or `false, error`. Commands notify errors.
 `get_state()` and `get_owner()` return copies; changing them never changes the
-plugin. State contains `enabled`, `tabpage`, `active`, `focused`, `groups` and
-`owners`, plus the boolean `fullscreen`. Each group has `id`, `win`, `side`,
-`buffers`, `current` and the boolean `hidden`. `side` is
+plugin. State contains `enabled`, `tabpage`, `active`, `focused`, `groups`,
+`owners`, `fullscreen` and `winbar_enabled`. Each group has `id`, `win`, `side`,
+`buffers`, `current`, `hidden` and `tabs_visible`. `side` is
 `left`, `right` or `single`; IDs stay stable while groups exist. Options may use
 `group` to select a group ID explicitly.
 
@@ -222,39 +226,78 @@ vim.api.nvim_create_autocmd("User", {
 })
 ```
 
-## Optional bufferline integration
+## Optional Bufferline integration and native winbar
 
-Load/configure buffer_groups before calling Bufferline's setup once:
+Load/configure buffer_groups before calling Bufferline's setup once. The adapter
+preserves the host configuration, then attaches after setup:
 
 ```lua
 local config = { options = { diagnostics = "nvim_lsp" } }
+local adapter
 if package.loaded["buffer_groups"] then
-  config = require("buffer_groups.integrations.bufferline").extend(config)
+  adapter = require("buffer_groups.integrations.bufferline")
+  config = adapter.extend(config, { display = "groups" })
 end
 require("bufferline").setup(config)
+if adapter and type(adapter.attach) == "function" then
+  adapter.attach()
+end
 ```
 
-The adapter copies the configuration, shows Left/Right owner groups in one global
-bar, follows the group's cycle order, and directs clicks to the owning split.
-While fullscreen, its filter hides every buffer belonging to the hidden group;
-restoring the split reveals those tabs again without reopening buffers.
-Existing filters, visual options and close callbacks are preserved/composed.
-It never calls Bufferline setup itself. Disabling the core restores original
-callback behavior; unregistering the local plugin keeps the config above usable.
+The default adapter display is `buffers`, which keeps the legacy grouped-buffer
+presentation. With more than one group, `display = "groups"` shows group
+controls; clicking a control only toggles that group's tabs. With one group,
+BufferGroups restores the original winbar and displays all buffer tabs on the
+global tabline, regardless of that group's `tabs_visible` preference. Creating
+another group restores the winbars and their visibility preferences. Fullscreen
+still retains two groups, including the hidden group. Tabs from external Bufferline groups retain their
+normal visibility. The adapter follows core ownership and cycle order, directs
+clicks to the owning split, and preserves host filters, options and close
+callbacks. Its fullscreen filter hides buffers owned by the hidden group; the
+native winbar reveal setting is independent of fullscreen.
 
-The optional second argument to `extend(config, adapter_opts)` accepts
-`managed_order = false` to keep Bufferline's sorter. By default managed groups
-follow their buffer order, including after returning to a single group. Within
-each Bufferline group, managed buffers precede unmanaged buffers; the host
-sorter still orders unmanaged buffers. Disabling the core restores the host
-sorter for all buffers.
-The history-based sort modes `insert_after_current` and `insert_at_end` require
-`managed_order = false` because their render history is private to Bufferline.
+Bufferline is optional to the core. The native group winbar UI requires a
+compatible Bufferline adapter to be attached. The internal renderer contract is
+validated against Bufferline 4.9.1; pin that version when using the native winbar.
+If attachment is unavailable or
+incompatible, the UI disables itself and warns while the core group management
+continues. The adapter never calls Bufferline setup itself. Pin, native cycle,
+pick and hover commands remain global and are not adapted in this version.
 
-Separate bars aligned above each split are not supported. Bufferline's native
-cycle, pin and manual move commands operate globally; use this plugin's cycling
-API and avoid pinning/manually sorting managed buffers. Existing host groups
-remain usable for buffers outside the managed owner groups.
+Configure the native winbar in `setup()`:
+
+```lua
+require("buffer_groups").setup({
+  winbar = {
+    enabled = true,
+    position = "prepend", -- prepend, append, replace, or manual
+    alignment = "left", -- left, center, or right
+    reveal_on_use = false,
+  },
+})
+```
+
+With `reveal_on_use = false`, hiding the winbar persists. With `true`, using a
+group reveals its tabs when focused, cycled, or used to open a buffer. Fullscreen remains a separate layout
+operation. `:BufferGroupsWinbar enable|disable|toggle` controls the winbar;
+`:BufferGroupsToggleTabs` toggles the focused group's tabs. The optional
+`toggle_winbar` and `toggle_tabs` keymaps can be configured without adding local
+key bindings by default.
+
+For manual composition, `require("buffer_groups.ui.winbar").render(win)`
+returns the native tab fragment for the given window. With `position = "manual"`,
+the external provider places that fragment and owns the winbar option. Other
+position modes compose with the existing content and apply `alignment`. The native UI element owns its
+rendering and exposes no styling flags; Bufferline remains responsible for
+Bufferline icons and appearance. Existing window width and window controls are
+restored safely, and Treesitter context stays below the winbar.
+
+The optional `managed_order = false` adapter setting retains Bufferline's native
+sorter. The history-based modes `insert_after_current` and `insert_at_end` need
+that setting because their render history is private to Bufferline.
+
+The renderer iterates groups dynamically; the current core still manages at most
+two groups. Extending the core layout is a separate change.
 
 ## Tests
 

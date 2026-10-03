@@ -8,6 +8,17 @@ local M = {}
 
 local api = vim.api
 local AUGROUP = "BufferGroupsBufferlineAdapter"
+local attachment
+local control_targets = {}
+
+local function group_display(core, display)
+  if display ~= "groups" or type(core.is_winbar_enabled) ~= "function" or not core.is_winbar_enabled() then
+    return false
+  end
+  local ui = package.loaded["buffer_groups.ui.winbar"]
+  local snapshot = ui and ui.get_snapshot()
+  return snapshot ~= nil and #(snapshot.groups or {}) > 1
+end
 
 local function deepcopy(value)
   return vim.deepcopy(value)
@@ -279,7 +290,7 @@ local function add_owner_groups(groups_config, names, core, snapshots)
   return groups_config
 end
 
-local function compose_filter(original_filter, core)
+local function compose_filter(original_filter, core, display)
   return function(bufnr, buf_numbers)
     if type(original_filter) == "function" and not original_filter(bufnr, buf_numbers) then
       return false
@@ -287,7 +298,7 @@ local function compose_filter(original_filter, core)
 
     if get_enabled(core) then
       local owner = get_owner(core, bufnr)
-      if owner and owner.hidden then
+      if owner and (owner.hidden or group_display(core, display)) then
         return false
       end
     end
@@ -383,37 +394,76 @@ local function install_refresh()
   })
 end
 
----Compose BufferGroups behavior into a Bufferline configuration copy.
----
----Call this before `require("bufferline").setup(config)`. The adapter only
----uses BufferGroups' public API and can be loaded without Bufferline installed.
----Set `adapter_opts.managed_order = false` to keep Bufferline's native sorting
----when using `insert_after_current` or `insert_at_end`, which rely on private
----Bufferline render history.
----@param full_config table Bufferline user config (`{ options = ..., highlights = ... }`).
----@param adapter_opts? table Optional `{ core = api, managed_order = boolean }`.
----@return table config A deep copy of `full_config` with BufferGroups callbacks composed.
+local function group_controls(core, display)
+  if not group_display(core, display) then
+    return {}
+  end
+  local ui = package.loaded["buffer_groups.ui.winbar"]
+  local snapshot = ui and ui.get_snapshot()
+  if not snapshot then
+    return {}
+  end
+  local controls = {}
+  for index, group in ipairs(snapshot.groups) do
+    control_targets[group.id] = { tabpage = snapshot.tabpage, group_id = group.id }
+    local label = ({ single = "Group", left = "Left", right = "Right" })[group.side] or "Group " .. index
+    label = label .. " " .. #group.buffers
+    if group.tabs_visible == false then
+      label = label .. " [tabs hidden]"
+    elseif group.hidden then
+      label = label .. " [fullscreen hidden]"
+    end
+    controls[#controls + 1] = {
+      text = "%" .. group.id .. "@v:lua.__buffer_groups_toggle_tabs@ " .. label:gsub("%%", "%%%%") .. " %T",
+      link = group.id == snapshot.focused and "BufferLineBufferSelected" or "BufferLineBufferVisible",
+    }
+  end
+  return controls
+end
+
+_G.__buffer_groups_toggle_tabs = function(id, _, button)
+  if button ~= "l" or not attachment then
+    return
+  end
+  local target = control_targets[id]
+  if target then
+    vim.schedule(function()
+      local ok, err = attachment.core.toggle_group_tabs(target)
+      if not ok then
+        vim.notify("buffer_groups: " .. tostring(err), vim.log.levels.WARN)
+      end
+    end)
+  end
+end
+
+---Compose the optional adapter before Bufferline setup. display defaults to
+---"buffers"; "groups" moves managed tabs to an attached native winbar.
+---@param full_config table
+---@param adapter_opts? table { core?, managed_order?, display?: "buffers"|"groups" }
+---@return table
 function M.extend(full_config, adapter_opts)
   assert(type(full_config) == "table", "bufferline config must be a table")
-
+  local display = adapter_opts and adapter_opts.display or "buffers"
+  assert(display == "buffers" or display == "groups", "invalid Bufferline adapter display")
   local core = get_core(adapter_opts)
   local config = deepcopy(full_config)
   config.options = config.options or {}
   local options = config.options
+  attachment = { core = core, display = display, filter = options.custom_filter }
 
   local snapshots = make_snapshot_reader(core)
   if options.mode ~= "tabs" then
+    local original_active = snapshots.active
+    snapshots.active = function()
+      return not group_display(core, display) and original_active()
+    end
     local groups_config = type(options.groups) == "table" and options.groups or {}
     groups_config = deepcopy(groups_config)
     groups_config.items = type(groups_config.items) == "table" and groups_config.items or {}
     local left_name, right_name = unique_group_names(groups_config.items)
-
     add_owner_groups(groups_config, { left = left_name, right = right_name }, core, snapshots)
     options.groups = groups_config
-
-    local original_filter = options.custom_filter
-    options.custom_filter = compose_filter(original_filter, core)
-
+    options.custom_filter = compose_filter(options.custom_filter, core, display)
     if not (adapter_opts and adapter_opts.managed_order == false) then
       local sorter, err = compose_sorter(options.sort_by, snapshots, options.mode)
       assert(sorter, err)
@@ -421,10 +471,45 @@ function M.extend(full_config, adapter_opts)
     end
     compose_open_click(options, core)
     compose_close(options, core)
+    if display == "groups" then
+      options.custom_areas = type(options.custom_areas) == "table" and options.custom_areas or {}
+      local original_left = options.custom_areas.left
+      options.custom_areas.left = function()
+        local items = group_controls(core, display)
+        if type(original_left) == "function" then
+          for _, item in ipairs(original_left() or {}) do
+            items[#items + 1] = item
+          end
+        end
+        return items
+      end
+    end
   end
-
   install_refresh()
   return config
+end
+
+---Activate the native renderer after Bufferline has completed setup.
+function M.attach()
+  if not attachment then
+    return false, "call adapter.extend() before adapter.attach()"
+  end
+  local ok, native = pcall(require, "buffer_groups.integrations.bufferline_native")
+  local ready, err
+  if ok then
+    ready, err = native.attach()
+  else
+    err = native
+  end
+  if not ready then
+    vim.notify("buffer_groups: " .. tostring(err), vim.log.levels.WARN)
+    local ui = package.loaded["buffer_groups.ui.winbar"]
+    if ui then
+      ui.suspend()
+    end
+    return false, err
+  end
+  return require("buffer_groups.ui.winbar").attach(native, attachment.filter, attachment.core)
 end
 
 return M

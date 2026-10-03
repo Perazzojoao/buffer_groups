@@ -18,6 +18,12 @@ M.defaults = {
     manual_window_close = "merge",
   },
   closing = { last_buffer = "empty", save_others = false },
+  winbar = {
+    enabled = false,
+    position = "prepend",
+    alignment = "left",
+    reveal_on_use = false,
+  },
 }
 local function fail(s)
   error("buffer_groups: " .. s, 3)
@@ -94,6 +100,23 @@ function M.resolve(opts)
   if type(c.closing.save_others) ~= "boolean" then
     fail("closing.save_others must be boolean")
   end
+  if type(c.winbar.enabled) ~= "boolean" then
+    fail("winbar.enabled must be boolean")
+  end
+  if
+    c.winbar.position ~= "prepend"
+    and c.winbar.position ~= "append"
+    and c.winbar.position ~= "replace"
+    and c.winbar.position ~= "manual"
+  then
+    fail("invalid winbar.position")
+  end
+  if c.winbar.alignment ~= "left" and c.winbar.alignment ~= "center" and c.winbar.alignment ~= "right" then
+    fail("invalid winbar.alignment")
+  end
+  if type(c.winbar.reveal_on_use) ~= "boolean" then
+    fail("winbar.reveal_on_use must be boolean")
+  end
   local keys = {
     move_left = true,
     move_right = true,
@@ -103,6 +126,8 @@ function M.resolve(opts)
     close_group = true,
     close_others = true,
     toggle_fullscreen = true,
+    toggle_winbar = true,
+    toggle_tabs = true,
   }
   for k, v in pairs(c.keymaps) do
     if not keys[k] then
