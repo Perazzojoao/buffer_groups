@@ -15,7 +15,7 @@ it in your plugin setup:
 
 ```lua
 vim.pack.add({
-  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.1.1" },
+  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.2.0" },
 })
 require("buffer_groups").setup({
   keymaps = {
@@ -135,7 +135,8 @@ an explicit `save = true` still requests saving even when forced.
 ```lua
 require("buffer_groups").setup({
   keymaps = {}, -- Optional keys: move_left, move_right, previous, next, close,
-                -- close_group, close_others, toggle_fullscreen, toggle_winbar, toggle_tabs.
+                -- close_group, close_others, toggle_fullscreen, toggle_winbar, toggle_tabs,
+                -- toggle_tabline_groups.
   exclude = {
     floating = true, -- Floating windows cannot be group owners.
     unlisted = true,
@@ -156,6 +157,7 @@ require("buffer_groups").setup({
     single_buffer_split = "require_two", -- Alternative: "new_buffer".
     manual_window_close = "merge",
   },
+  tabline = { show_groups = true }, -- Hide group controls with false.
   closing = {
     last_buffer = "empty", -- Alternative: "quit".
     save_others = false, -- Save modified buffers before close_others().
@@ -197,6 +199,9 @@ groups.set_winbar_enabled(false)
 local winbar_enabled = groups.is_winbar_enabled()
 groups.set_group_tabs_visible(false, { group_id = group_id, tabpage = tabpage })
 groups.toggle_group_tabs() -- Defaults to the focused group and tabpage.
+groups.set_tabline_groups_visible(false)
+groups.toggle_tabline_groups()
+local tabline_options = groups.get_tabline_options()
 groups.disable()
 groups.enable()
 local enabled = groups.is_enabled()
@@ -269,6 +274,54 @@ normal visibility. The adapter follows core ownership and cycle order, directs
 clicks to the owning split, and preserves host filters, options and close
 callbacks. Its fullscreen filter hides buffers owned by the hidden group; the
 native winbar reveal setting is independent of fullscreen.
+
+To hide the group controls in the global tabline, configure:
+
+```lua
+require("buffer_groups").setup({
+  winbar = { enabled = true },
+  tabline = { show_groups = false },
+})
+```
+
+`tabline.show_groups` is a boolean and defaults to `true`. With an attached
+adapter using `display = "groups"` and multiple groups, `false` removes only the
+plugin's group controls. The entire tabline is hidden if Bufferline's evaluated
+output contains no visible content apart from sidebar offsets. External
+buffers, custom areas and native tabpage indicators keep the line visible.
+Sidebar offsets (including their labels and separators) only reserve layout
+space; they do not reveal an otherwise empty line when an explorer opens.
+Offsets remain unchanged whenever other content makes the tabline visible.
+Whitespace and highlight/fill formatting alone do not count as content. With one group, or
+when the winbar or plugin is disabled, normal Bufferline behavior returns.
+While the controller owns visibility, it checks rendered content every 200 ms,
+including while the line is hidden, so asynchronous custom areas can reveal it
+without an editor event. The timer stops when ownership ends or rendering
+fails. Bufferline options are read from the current configuration after
+colorscheme changes, preserving each options table's native auto-toggle setting.
+Previous visibility and native auto-toggle settings are restored when the
+plugin releases ownership. `get_tabline_options()` returns a copy of these
+settings. This option requires no Bufferline dependency in the core.
+
+Use `:BufferGroupsToggleTablineGroups` to toggle the group controls for the
+current Neovim session. To assign your own shortcut:
+
+```lua
+require("buffer_groups").setup({
+  winbar = { enabled = true },
+  tabline = { show_groups = false }, -- Initial visibility.
+  keymaps = { toggle_tabline_groups = "<leader>mt" },
+})
+```
+
+The toggle applies globally across tabpages. It changes only session state;
+it does not modify your configured default or write state to disk. Disabling
+and enabling the plugin retains the session choice. Calling `setup()` again,
+or reopening Neovim, restores `tabline.show_groups`. The API also exposes
+`toggle_tabline_groups()` and `set_tabline_groups_visible(boolean)`; both return
+`true, visible`, or `false, error` for invalid setter input.
+`get_tabline_options().show_groups` reports effective session visibility.
+Normal buffer tabs in single-group mode are unaffected.
 
 Bufferline is optional to the core. The native group winbar UI requires a
 compatible Bufferline adapter to be attached. The internal renderer contract is

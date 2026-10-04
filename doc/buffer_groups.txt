@@ -13,7 +13,7 @@ INSTALLATION                                              *buffer_groups-install
 
 Register the published release with vim.pack, then configure the plugin: >lua
   vim.pack.add({
-    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.1.1' },
+    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.2.0' },
   })
   require('buffer_groups').setup({
     keymaps = { move_left = '<leader>h', move_right = '<leader>l',
@@ -36,7 +36,7 @@ OPTIONS                                              *buffer_groups.setup()*
 
 setup({opts}) is idempotent. No default keymaps. Available mapping names:
 move_left, move_right, previous, next, close, close_group, close_others,
-toggle_fullscreen, toggle_winbar, toggle_tabs
+toggle_fullscreen, toggle_winbar, toggle_tabs, toggle_tabline_groups
 (normal mode).
 
 exclude.floating=true is required: only normal windows can own layout groups.
@@ -53,6 +53,7 @@ behavior.single_buffer_split='require_two' ('new_buffer' also supported)
 behavior.manual_window_close='merge'
 closing.last_buffer='empty' ('quit' also supported)
 closing.save_others=false (save modified targets before close_others)
+tabline.show_groups=true (boolean; hide the group controls with false)
 
 Initialize with two eligible buffers; otherwise leave layout unchanged. Existing
 pairs are adopted. More than two eligible windows prevents initialization.
@@ -101,6 +102,8 @@ require('buffer_groups') exposes:
   set_winbar_enabled(boolean), is_winbar_enabled()
   set_group_tabs_visible(boolean, {group_id?,tabpage?})
   toggle_group_tabs({group_id?,tabpage?})
+  set_tabline_groups_visible(boolean), toggle_tabline_groups()
+  get_tabline_options()
   enable(), disable(), is_enabled()
 
 Mutations return true,result or false,error. Commands report errors. Queries
@@ -160,6 +163,40 @@ External Bufferline group tabs keep normal visibility.
 The adapter composes host options, filters and callbacks, follows core ownership
 and cycle order, and sends clicks to the owning split. In fullscreen it hides
 buffers owned by the hidden group.
+
+Hide the plugin's group controls with: >lua
+  require('buffer_groups').setup({
+    winbar = { enabled = true },
+    tabline = { show_groups = false },
+  })
+<
+With display='groups', an attached winbar and multiple groups, false omits the
+plugin's group controls. The entire tabline is hidden when Bufferline's evaluated
+output has no visible content apart from sidebar offsets. External buffers,
+custom areas and native tabpage indicators keep it visible. Sidebar offsets,
+including labels and separators, reserve layout space and do not reveal an
+otherwise empty line when opening an explorer. They are preserved whenever
+other content keeps the tabline visible. Whitespace/highlight/fill alone are
+ignored. With one group, or a disabled winbar/plugin, normal Bufferline
+behavior returns. While visibility is controlled, a 200 ms timer checks content
+even when hidden, revealing asynchronous custom areas without an editor event.
+The timer stops when ownership ends or rendering fails. Current Bufferline
+options are resolved after colorscheme changes; each table's original native
+auto-toggle setting is preserved. Visibility and auto-toggle settings are
+restored when ownership ends. get_tabline_options() returns a copy of the
+current settings.
+The option is boolean and defaults to true; Bufferline remains optional.
+
+:BufferGroupsToggleTablineGroups toggles the group controls for this session.
+Configure a shortcut with: >lua
+  keymaps = { toggle_tabline_groups = '<leader>mt' }
+<
+The toggle affects all tabpages and changes only session state. It does not
+change the configured default or save anything to disk. Disable/enable retains
+the session choice; setup() or reopening Neovim restores tabline.show_groups.
+API: toggle_tabline_groups() and set_tabline_groups_visible(boolean) return
+true, visible (or false, error for invalid input). get_tabline_options().show_groups
+reports effective visibility. Single-group buffer tabs are unaffected.
 
 Bufferline is optional to core group management. The native group winbar needs
 an attached compatible Bufferline adapter. The internal renderer contract is

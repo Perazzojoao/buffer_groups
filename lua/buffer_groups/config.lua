@@ -18,6 +18,7 @@ M.defaults = {
     manual_window_close = "merge",
   },
   closing = { last_buffer = "empty", save_others = false },
+  tabline = { show_groups = true },
   winbar = {
     enabled = false,
     position = "prepend",
@@ -100,6 +101,9 @@ function M.resolve(opts)
   if type(c.closing.save_others) ~= "boolean" then
     fail("closing.save_others must be boolean")
   end
+  if type(c.tabline.show_groups) ~= "boolean" then
+    fail("tabline.show_groups must be boolean")
+  end
   if type(c.winbar.enabled) ~= "boolean" then
     fail("winbar.enabled must be boolean")
   end
@@ -128,6 +132,7 @@ function M.resolve(opts)
     toggle_fullscreen = true,
     toggle_winbar = true,
     toggle_tabs = true,
+    toggle_tabline_groups = true,
   }
   for k, v in pairs(c.keymaps) do
     if not keys[k] then

@@ -2,6 +2,7 @@ local M = {}
 local api = vim.api
 local config = require("buffer_groups.config")
 local cfg = config.resolve()
+local tabline_groups_visible = cfg.tabline.show_groups
 local enabled, busy, tabs, next_id, maps = false, false, {}, 0, {}
 local pending = {}
 local homes = {}
@@ -691,6 +692,24 @@ end
 function M.is_enabled()
   return enabled
 end
+function M.get_tabline_options()
+  local options = vim.deepcopy(cfg.tabline)
+  options.show_groups = tabline_groups_visible
+  return options
+end
+function M.set_tabline_groups_visible(value)
+  if type(value) ~= "boolean" then
+    return false, "tabline group visibility must be boolean"
+  end
+  if tabline_groups_visible ~= value then
+    tabline_groups_visible = value
+    event(api.nvim_get_current_tabpage(), "set_tabline_groups_visible")
+  end
+  return true, value
+end
+function M.toggle_tabline_groups()
+  return M.set_tabline_groups_visible(not tabline_groups_visible)
+end
 function M.is_winbar_enabled()
   return effective_winbar_enabled()
 end
@@ -1340,6 +1359,9 @@ local function install_maps()
     toggle_tabs = function()
       return M.toggle_group_tabs()
     end,
+    toggle_tabline_groups = function()
+      return M.toggle_tabline_groups()
+    end,
   }
   for name, lhs in pairs(cfg.keymaps) do
     local previous = global_map(lhs)
@@ -1426,6 +1448,7 @@ function M.setup(opts)
     error("buffer_groups: " .. tostring(err), 2)
   end
   cfg = resolved
+  tabline_groups_visible = cfg.tabline.show_groups
   local ui = loaded_winbar()
   if resolved.winbar.enabled or (opts and opts.winbar ~= nil) or ui then
     if not ui then
@@ -1484,6 +1507,11 @@ function M.setup(opts)
   api.nvim_create_user_command("BufferGroupsToggleFullscreen", function()
     report(function()
       return M.toggle_fullscreen()
+    end)
+  end, { force = true })
+  api.nvim_create_user_command("BufferGroupsToggleTablineGroups", function()
+    report(function()
+      return M.toggle_tabline_groups()
     end)
   end, { force = true })
   api.nvim_create_user_command("BufferGroupsWinbar", function(o)

@@ -20,6 +20,11 @@ local function group_display(core, display)
   return snapshot ~= nil and #(snapshot.groups or {}) > 1
 end
 
+local function show_group_tabs(core)
+  local options = type(core.get_tabline_options) == "function" and core.get_tabline_options() or {}
+  return options.show_groups ~= false
+end
+
 local function deepcopy(value)
   return vim.deepcopy(value)
 end
@@ -395,7 +400,7 @@ local function install_refresh()
 end
 
 local function group_controls(core, display)
-  if not group_display(core, display) then
+  if not group_display(core, display) or not show_group_tabs(core) then
     return {}
   end
   local ui = package.loaded["buffer_groups.ui.winbar"]
@@ -445,6 +450,10 @@ function M.extend(full_config, adapter_opts)
   assert(type(full_config) == "table", "bufferline config must be a table")
   local display = adapter_opts and adapter_opts.display or "buffers"
   assert(display == "buffers" or display == "groups", "invalid Bufferline adapter display")
+  local visibility = package.loaded["buffer_groups.ui.tabline"]
+  if visibility then
+    visibility.detach()
+  end
   local core = get_core(adapter_opts)
   local config = deepcopy(full_config)
   config.options = config.options or {}
@@ -494,6 +503,10 @@ function M.attach()
   if not attachment then
     return false, "call adapter.extend() before adapter.attach()"
   end
+  local visibility = package.loaded["buffer_groups.ui.tabline"]
+  if visibility then
+    visibility.detach()
+  end
   local ok, native = pcall(require, "buffer_groups.integrations.bufferline_native")
   local ready, err
   if ok then
@@ -509,7 +522,15 @@ function M.attach()
     end
     return false, err
   end
-  return require("buffer_groups.ui.winbar").attach(native, attachment.filter, attachment.core)
+  local attached, detail = require("buffer_groups.ui.winbar").attach(native, attachment.filter, attachment.core)
+  if attached and attachment.display == "groups" then
+    require("buffer_groups.ui.tabline").attach(function()
+      return get_enabled(attachment.core)
+        and group_display(attachment.core, attachment.display)
+        and not show_group_tabs(attachment.core)
+    end)
+  end
+  return attached, detail
 end
 
 return M
