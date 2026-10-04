@@ -5,10 +5,39 @@ buffer transfers its ownership; cycling stays inside the focused group. Empty
 groups close their split automatically.
 
 Requires Neovim 0.11 or newer. No runtime dependencies. Bufferline and Snacks are
-optional. This repository is currently being developed locally; the GitHub
-installation example is for use after publication.
+optional. Core management supports two independent groups per tabpage. The
+optional native group winbar requires the Bufferline 4.9.1 adapter.
 
-## Local installation
+## Installation
+
+With Neovim's built-in package manager, add the published release and configure
+it in your plugin setup:
+
+```lua
+vim.pack.add({
+  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.1.0" },
+})
+require("buffer_groups").setup({
+  keymaps = {
+    move_left = "<leader>h",
+    move_right = "<leader>l",
+    previous = "<A-h>",
+    next = "<A-l>",
+    close_group = "<leader>kg",
+    close_others = "<leader>ko",
+    toggle_fullscreen = "<leader>mm",
+  },
+})
+```
+
+The plugin does not require `vim.pack`; other package managers can install the
+same repository and call `setup()`. `setup({})` installs commands and observes
+buffers, but does not install keymaps or immediately split the editor.
+
+### Development installation
+
+For local development, prepend the checkout to `runtimepath` instead of adding a
+package-manager entry:
 
 ```lua
 vim.opt.runtimepath:prepend(vim.fn.expand("~/Dev/Personal/buffer_groups"))
@@ -25,24 +54,9 @@ require("buffer_groups").setup({
 })
 ```
 
-Keep these lines in a single registration module. Removing that module and
-restarting Neovim disables the plugin. `setup({})` installs commands and observes
-buffers, but does not install any keymaps or immediately split the editor.
-For a manual runtimepath installation, generate the help index once with
-`:helptags ~/Dev/Personal/buffer_groups/doc`.
-
-Once published, Neovim configurations using `vim.pack` can register the repository
-URL instead of extending the local runtimepath:
-
-```lua
-vim.pack.add({
-  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.1.0" },
-})
-require("buffer_groups").setup({ --[[ your options ]] })
-```
-
-The plugin itself does not require `vim.pack`. Other package managers can load
-the same repository and call `setup()`.
+Keep local registration in a single module. Removing that module and restarting
+Neovim disables the plugin. For a manual runtimepath installation, generate the
+help index once with `:helptags ~/Dev/Personal/buffer_groups/doc`.
 
 ## Working with groups
 

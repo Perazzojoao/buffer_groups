@@ -3,12 +3,18 @@
 ==============================================================================
 OVERVIEW                                                   *buffer_groups*
 
-Requires Neovim >= 0.11. No runtime dependencies. Groups are exclusive within a
-tabpage; different tabpages have independent state. One normal group exists
-before partitioning. Listed unloaded buffers remain available.
+Requires Neovim >= 0.11. No runtime dependencies. Core management supports two
+independent groups per tabpage; different tabpages have independent state. One
+normal group exists before partitioning. Listed unloaded buffers remain
+available. Bufferline and Snacks are optional. The native multi-group winbar
+requires the Bufferline 4.9.1 adapter.
 
-Local registration: >lua
-  vim.opt.runtimepath:prepend(vim.fn.expand('~/Dev/Personal/buffer_groups'))
+INSTALLATION                                              *buffer_groups-install*
+
+Register the published release with vim.pack, then configure the plugin: >lua
+  vim.pack.add({
+    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.1.0' },
+  })
   require('buffer_groups').setup({
     keymaps = { move_left = '<leader>h', move_right = '<leader>l',
                 previous = '<A-h>', next = '<A-l>',
@@ -16,14 +22,21 @@ Local registration: >lua
                 toggle_fullscreen = '<leader>mm' },
   })
 <
-Remove this registration and restart to stop loading the local plugin.
+The plugin does not require vim.pack; other package managers can load the same
+repository and call setup(). For local development, prepend a checkout instead
+of adding a package entry: >lua
+  vim.opt.runtimepath:prepend(vim.fn.expand('~/Dev/Personal/buffer_groups'))
+  require('buffer_groups').setup({})
+<
+For a manual runtimepath installation, generate the help index once with
+:helptags ~/Dev/Personal/buffer_groups/doc.
 
 ==============================================================================
 OPTIONS                                              *buffer_groups.setup()*
 
 setup({opts}) is idempotent. No default keymaps. Available mapping names:
 move_left, move_right, previous, next, close, close_group, close_others,
-toggle_fullscreen
+toggle_fullscreen, toggle_winbar, toggle_tabs
 (normal mode).
 
 exclude.floating=true is required: only normal windows can own layout groups.
@@ -114,6 +127,9 @@ COMMANDS                                                *:BufferGroupsMove*
 :BufferGroupsCloseGroup[!]     Close the focused group; ! discards changes.
 :BufferGroupsCloseOthers[!]    Close other group buffers; ! discards changes.
 :BufferGroupsToggleFullscreen  Hide/reveal the other group without closing buffers.
+:BufferGroupsWinbar enable|disable|toggle
+                               Enable or disable the native group winbar.
+:BufferGroupsToggleTabs        Toggle tabs for the focused group.
 :BufferGroupsEnable            Enable observers/configured mappings.
 :BufferGroupsDisable           Disable while preserving windows and buffers.
 
