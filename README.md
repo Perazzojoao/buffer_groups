@@ -15,7 +15,7 @@ it in your plugin setup:
 
 ```lua
 vim.pack.add({
-  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.1.0" },
+  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.1.1" },
 })
 require("buffer_groups").setup({
   keymaps = {

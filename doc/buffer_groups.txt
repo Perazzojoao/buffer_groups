@@ -13,7 +13,7 @@ INSTALLATION                                              *buffer_groups-install
 
 Register the published release with vim.pack, then configure the plugin: >lua
   vim.pack.add({
-    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.1.0' },
+    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.1.1' },
   })
   require('buffer_groups').setup({
     keymaps = { move_left = '<leader>h', move_right = '<leader>l',

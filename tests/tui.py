@@ -76,7 +76,7 @@ def main() -> int:
         f'''local root = {lua_quote(str(ROOT))}
 local temp = {lua_quote(str(temp_root))}
 vim.opt.runtimepath:prepend(root)
-for path in vim.env.BG_TEST_PLUGIN_PATHS:gmatch("[^:]+") do vim.opt.runtimepath:append(path) end
+for path in (vim.env.BG_TEST_PLUGIN_PATHS or ""):gmatch("[^:]+") do vim.opt.runtimepath:append(path) end
 vim.opt.mouse = "a"
 vim.opt.ttimeout = true
 vim.opt.ttimeoutlen = 500
