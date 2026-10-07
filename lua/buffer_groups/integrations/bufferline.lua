@@ -450,6 +450,10 @@ function M.extend(full_config, adapter_opts)
   assert(type(full_config) == "table", "bufferline config must be a table")
   local display = adapter_opts and adapter_opts.display or "buffers"
   assert(display == "buffers" or display == "groups", "invalid Bufferline adapter display")
+  local reordering = package.loaded["buffer_groups.integrations.bufferline_reordering"]
+  if reordering then
+    reordering.detach()
+  end
   local visibility = package.loaded["buffer_groups.ui.tabline"]
   if visibility then
     visibility.detach()
@@ -458,7 +462,12 @@ function M.extend(full_config, adapter_opts)
   local config = deepcopy(full_config)
   config.options = config.options or {}
   local options = config.options
-  attachment = { core = core, display = display, filter = options.custom_filter }
+  attachment = {
+    core = core,
+    display = display,
+    filter = options.custom_filter,
+    managed_order = not (adapter_opts and adapter_opts.managed_order == false),
+  }
 
   local snapshots = make_snapshot_reader(core)
   if options.mode ~= "tabs" then
@@ -503,6 +512,10 @@ function M.attach()
   if not attachment then
     return false, "call adapter.extend() before adapter.attach()"
   end
+  local reordering = package.loaded["buffer_groups.integrations.bufferline_reordering"]
+  if reordering then
+    reordering.detach()
+  end
   local visibility = package.loaded["buffer_groups.ui.tabline"]
   if visibility then
     visibility.detach()
@@ -529,6 +542,14 @@ function M.attach()
         and group_display(attachment.core, attachment.display)
         and not show_group_tabs(attachment.core)
     end)
+  end
+  if attached and type(attachment.core._set_reorder_adapter) == "function" then
+    local connected, err =
+      require("buffer_groups.integrations.bufferline_reordering").attach(attachment.core, attachment.managed_order)
+    if not connected then
+      vim.notify("buffer_groups: " .. tostring(err), vim.log.levels.WARN)
+      return false, err
+    end
   end
   return attached, detail
 end

@@ -19,6 +19,7 @@ M.defaults = {
   },
   closing = { last_buffer = "empty", save_others = false },
   tabline = { show_groups = true },
+  reordering = { enabled = false },
   winbar = {
     enabled = false,
     position = "prepend",
@@ -104,6 +105,9 @@ function M.resolve(opts)
   if type(c.tabline.show_groups) ~= "boolean" then
     fail("tabline.show_groups must be boolean")
   end
+  if type(c.reordering.enabled) ~= "boolean" then
+    fail("reordering.enabled must be boolean")
+  end
   if type(c.winbar.enabled) ~= "boolean" then
     fail("winbar.enabled must be boolean")
   end
@@ -133,6 +137,8 @@ function M.resolve(opts)
     toggle_winbar = true,
     toggle_tabs = true,
     toggle_tabline_groups = true,
+    reorder_left = true,
+    reorder_right = true,
   }
   for k, v in pairs(c.keymaps) do
     if not keys[k] then

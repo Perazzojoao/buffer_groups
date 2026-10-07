@@ -13,7 +13,7 @@ INSTALLATION                                              *buffer_groups-install
 
 Register the published release with vim.pack, then configure the plugin: >lua
   vim.pack.add({
-    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.2.0' },
+    { src = 'https://github.com/Perazzojoao/buffer_groups', version = 'v0.3.0' },
   })
   require('buffer_groups').setup({
     keymaps = { move_left = '<leader>h', move_right = '<leader>l',
@@ -36,8 +36,27 @@ OPTIONS                                              *buffer_groups.setup()*
 
 setup({opts}) is idempotent. No default keymaps. Available mapping names:
 move_left, move_right, previous, next, close, close_group, close_others,
-toggle_fullscreen, toggle_winbar, toggle_tabs, toggle_tabline_groups
+reorder_left, reorder_right, toggle_fullscreen, toggle_winbar, toggle_tabs,
+toggle_tabline_groups
 (normal mode).
+
+Reordering is available starting with v0.3.0. reordering.enabled=false by
+default. Reordering has no default keymaps. Set
+reordering.enabled=true and configure keymaps.reorder_left/reorder_right to
+choose mappings. <A-H>/<A-L> represent Shift-Alt-H/L; existing <A-h>/<A-l>
+mappings can continue cycling within the focused group. For example: >lua
+  require('buffer_groups').setup({
+    reordering = { enabled = true },
+    keymaps = { reorder_left = '<A-H>', reorder_right = '<A-L>' },
+  })
+  local adapter = require('buffer_groups.integrations.bufferline')
+  local config = adapter.extend({ options = { mode = 'buffers' } },
+                              { managed_order = true })
+  require('bufferline').setup(config)
+  adapter.attach()
+<
+Core enable()/disable() activates or suspends the configured feature with the
+other mappings/observers.
 
 exclude.floating=true is required: only normal windows can own layout groups.
 exclude.unlisted=true; default filetypes are snacks_layout_box/snacks_picker_list;
@@ -91,6 +110,8 @@ API                                                    *buffer_groups-api*
 require('buffer_groups') exposes:
   move('left'|'right', {buf?,win?,tabpage?,group?})
   cycle(1|-1)
+  reorder(-1|1, {win?,tabpage?,from_index?})
+  reorder_to(index, {win?,tabpage?,from_index?})
   open(bufnr, {win?,tabpage?,group?,focus?})
   register(bufnr, {win?,tabpage?,group?})
   close(bufnr, {force?,tabpage?})
@@ -104,6 +125,7 @@ require('buffer_groups') exposes:
   toggle_group_tabs({group_id?,tabpage?})
   set_tabline_groups_visible(boolean), toggle_tabline_groups()
   get_tabline_options()
+  get_reordering_options(), is_reordering_enabled()
   enable(), disable(), is_enabled()
 
 Mutations return true,result or false,error. Commands report errors. Queries
@@ -115,6 +137,17 @@ positions.
 Hidden groups have win=nil; restored splits receive new window IDs. Read fresh
 snapshots when resolving destinations. close_group/close_others return closed buffer IDs;
 toggle_fullscreen returns the new fullscreen boolean.
+
+reorder() swaps the current buffer with the adjacent member of its owning
+group. It does not wrap at group edges; an edge move succeeds with moved=false.
+reorder_to(index) swaps with the buffer at the one-based group position; a
+negative index counts from the end. from_index optionally chooses the source
+position in that group. Successful
+changes return {buf,group_id,from,to,moved}; invalid zero/non-integer indices
+and zero target indices return false,error; delta 0 is a successful no-op.
+get_reordering_options() returns a copy of the configured options, and
+is_reordering_enabled() reports whether the feature is currently active.
+Reordering only changes session state and does not publish or persist order.
 
 disable() reveals hidden groups, preserves buffers and restores owned mappings only if
 the current mapping is still installed by the plugin. enable() starts fresh
@@ -129,6 +162,8 @@ COMMANDS                                                *:BufferGroupsMove*
 :BufferGroupsClose[!]          Close buffer; ! explicitly discards changes.
 :BufferGroupsCloseGroup[!]     Close the focused group; ! discards changes.
 :BufferGroupsCloseOthers[!]    Close other group buffers; ! discards changes.
+:BufferGroupsReorder left|right Swap current buffer with adjacent group member.
+:BufferGroupsReorderTo {index} Swap current buffer with group position.
 :BufferGroupsToggleFullscreen  Hide/reveal the other group without closing buffers.
 :BufferGroupsWinbar enable|disable|toggle
                                Enable or disable the native group winbar.
@@ -148,7 +183,7 @@ adapter after setup: >lua
   local adapter
   if package.loaded['buffer_groups'] then
     adapter = require('buffer_groups.integrations.bufferline')
-    config = adapter.extend(config, { display = 'groups' })
+    config = adapter.extend(config, { display = 'groups', managed_order = true })
   end
   require('bufferline').setup(config)
   if adapter and type(adapter.attach) == 'function' then adapter.attach() end
@@ -163,6 +198,19 @@ External Bufferline group tabs keep normal visibility.
 The adapter composes host options, filters and callbacks, follows core ownership
 and cycle order, and sends clicks to the owning split. In fullscreen it hides
 buffers owned by the hidden group.
+
+With mode='buffers' and managed_order=true, the adapter orders owned buffers
+by group order and wraps Bufferline's native move operations around the
+group-local reorder API. The core has no Bufferline dependency. When disabled,
+or for unmanaged buffers, native Bufferline move behavior is used. With the
+core active, managed sorting continues when reordering.enabled=false. Disabling
+the core restores host sorting and command behavior until it is enabled again.
+Setting managed_order=false retains the host sorter and disables managed
+sorting. Bufferline pinning and manually created groups can override the global
+tabline order; those native partitions are not covered by the reorder
+integration checks.
+BufferGroupsReorder and BufferGroupsReorderTo change buffer order only; they do
+not invoke Bufferline's sort commands. Reorder changes are session-only.
 
 Hide the plugin's group controls with: >lua
   require('buffer_groups').setup({
@@ -186,6 +234,11 @@ auto-toggle setting is preserved. Visibility and auto-toggle settings are
 restored when ownership ends. get_tabline_options() returns a copy of the
 current settings.
 The option is boolean and defaults to true; Bufferline remains optional.
+
+The PTY test exercises Shift-Alt-H/L and lowercase Alt-h/l while observing
+Bufferline's public rendered elements. A PTY cannot visually inspect the
+terminal tabline or confirm key encoding through a user's terminal and
+multiplexer; manually check both mappings and the two-group display there.
 
 :BufferGroupsToggleTablineGroups toggles the group controls for this session.
 Configure a shortcut with: >lua

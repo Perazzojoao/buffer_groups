@@ -38,6 +38,8 @@ CORE_CASES = [
     "tabs_are_independent",
     "disable_reenable_and_setup_idempotence",
     "buffer_local_map_shadow_and_restore",
+    "reordering_availability",
+    "reordering_group_order",
 ]
 
 
@@ -210,6 +212,30 @@ def run_integration(nvim: str, temp_root: Path, plugin_paths: list[Path]) -> tup
     return 1, 0
 
 
+
+def run_reordering(nvim: str, temp_root: Path, plugin_paths: list[Path]) -> tuple[int, int]:
+    case_dir = temp_root / "reordering"
+    case_dir.mkdir()
+    env = base_env(case_dir, nvim, plugin_paths)
+    try:
+        result = run_nvim_script(nvim, TESTS / "reordering.lua", env, ROOT)
+    except subprocess.TimeoutExpired:
+        print("FAIL reordering integration: nvim timed out", file=sys.stderr)
+        return 0, 1
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode:
+        print("FAIL reordering integration", file=sys.stderr)
+        print(output, file=sys.stderr)
+        return 0, 1
+    if "SKIP reorder integration:" in output:
+        print(output)
+        return 0, 0
+    print("PASS reordering integration")
+    if output:
+        print(output)
+    return 1, 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nvim", default=shutil.which("nvim"), help="Neovim executable (defaults to PATH nvim)")
@@ -238,7 +264,13 @@ def main() -> int:
             integration_passed, integration_failed = run_integration(nvim, temp_root, plugin_paths)
             passed += integration_passed
             failed += integration_failed
-        tui_suites = (("tui", "tui.py"), ("cycle-tui", "cycle_tui.py")) if args.tui else ()
+            reorder_passed, reorder_failed = run_reordering(nvim, temp_root, plugin_paths)
+            passed += reorder_passed
+            failed += reorder_failed
+        tui_suites = (
+            (("tui", "tui.py"), ("cycle-tui", "cycle_tui.py"), ("reorder-tui", "reorder_tui.py"))
+            if args.tui else ()
+        )
         for label, filename in tui_suites:
             try:
                 tui = subprocess.run(

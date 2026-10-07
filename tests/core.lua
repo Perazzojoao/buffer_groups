@@ -778,6 +778,224 @@ cases.tabs_are_independent = function()
   )
 end
 
+cases.reordering_availability = function()
+  local old_left, old_right = function() end, function() end
+  vim.keymap.set("n", "x", old_left, { desc = "user-reorder-left" })
+  vim.keymap.set("n", "y", old_right, { desc = "user-reorder-right" })
+  configured({
+    reordering = { enabled = true },
+    keymaps = { reorder_left = "x", reorder_right = "y" },
+  })
+  falsy(plugin.is_reordering_enabled(), "reordering enabled without an adapter")
+  eq(plugin.get_reordering_options(), { enabled = true }, "reordering options differ")
+  eq(vim.fn.maparg("x", "n", false, true).desc, "user-reorder-left", "inactive feature replaced left map")
+  local invalid, invalid_err = plugin._set_reorder_adapter({})
+  falsy(invalid, "adapter without is_active was accepted")
+  truthy(invalid_err, "invalid adapter did not report an error")
+  local capability, throws = false, false
+  local provider = {
+    is_active = function()
+      if throws then
+        error("adapter check failed")
+      end
+      return capability
+    end,
+  }
+  truthy(plugin._set_reorder_adapter(provider), "valid adapter was rejected")
+  falsy(plugin.is_reordering_enabled(), "inactive adapter enabled reordering")
+  capability = true
+  truthy(plugin._set_reorder_adapter(provider), "adapter refresh failed")
+  truthy(plugin.is_reordering_enabled(), "active adapter did not enable reordering")
+  eq(vim.fn.maparg("x", "n", false, true).desc, "BufferGroups reorder_left", "left map was not installed")
+  eq(vim.fn.maparg("y", "n", false, true).desc, "BufferGroups reorder_right", "right map was not installed")
+  local options = plugin.get_reordering_options()
+  options.enabled = false
+  truthy(plugin.is_reordering_enabled(), "reordering options were not copied")
+  throws = true
+  falsy(plugin.is_reordering_enabled(), "failing adapter callback enabled reordering")
+  truthy(plugin._set_reorder_adapter(provider), "failing adapter refresh failed")
+  eq(vim.fn.maparg("x", "n", false, true).desc, "user-reorder-left", "failed adapter left map installed")
+  throws = false
+  truthy(plugin._set_reorder_adapter(provider), "adapter reactivation failed")
+  plugin.disable()
+  falsy(plugin.is_reordering_enabled(), "core disable left reordering enabled")
+  eq(vim.fn.maparg("x", "n", false, true).desc, "user-reorder-left", "disable did not restore left map")
+  plugin.enable()
+  truthy(plugin.is_reordering_enabled(), "core re-enable did not restore adapter capability")
+  eq(vim.fn.maparg("x", "n", false, true).desc, "BufferGroups reorder_left", "re-enable did not reinstall left map")
+  local commands = api.nvim_get_commands({})
+  truthy(commands.BufferGroupsReorder, "BufferGroupsReorder command was not installed")
+  truthy(commands.BufferGroupsReorderTo, "BufferGroupsReorderTo command was not installed")
+  eq(vim.fn.getcompletion("BufferGroupsReorder ", "cmdline"), { "left", "right" }, "reorder completion differs")
+  local ok, err = pcall(plugin.setup, { reordering = { enabled = "yes" } })
+  falsy(ok, "non-boolean reordering.enabled was accepted")
+  truthy(err, "invalid reordering.enabled did not report an error")
+end
+
+cases.reordering_group_order = function()
+  configured({ reordering = { enabled = true } })
+  truthy(
+    plugin._set_reorder_adapter({
+      is_active = function()
+        return true
+      end,
+    }),
+    "test adapter was rejected"
+  )
+  truthy(plugin.is_reordering_enabled(), "test adapter did not enable reordering")
+  local a = make_buffer("reorder-a.txt", true)
+  make_buffer("reorder-b.txt")
+  make_buffer("reorder-c.txt")
+  make_buffer("reorder-d.txt")
+  make_buffer("reorder-e.txt")
+  api.nvim_win_set_buf(0, a)
+  flush()
+  local initial = state()
+  local group = initial.groups[1]
+  truthy(#group.buffers >= 4, "test group needs several buffers")
+  local ok, err, result = plugin.reorder(0.5)
+  falsy(ok, "fractional delta was accepted")
+  truthy(err, "fractional delta did not report an error")
+  ok, err = plugin.reorder("1")
+  falsy(ok, "string delta was accepted")
+  truthy(err, "string delta did not report an error")
+  ok, err = plugin.reorder_to(0)
+  falsy(ok, "zero target index was accepted")
+  truthy(err, "zero target index did not report an error")
+  ok, err = plugin.reorder_to(1.5)
+  falsy(ok, "fractional target index was accepted")
+  truthy(err, "fractional target index did not report an error")
+  ok, err = plugin.reorder(1, false)
+  falsy(ok, "non-table options were accepted")
+  truthy(err, "non-table options did not report an error")
+  ok, err = plugin.reorder(1, { from_index = 0 })
+  falsy(ok, "zero source index was accepted")
+  truthy(err, "zero source index did not report an error")
+  ok, err = plugin.reorder(1, { from_index = 1.5 })
+  falsy(ok, "fractional source index was accepted")
+  truthy(err, "fractional source index did not report an error")
+  ok, err = plugin.reorder(1, { from_index = #group.buffers + 1 })
+  falsy(ok, "source index outside the group was accepted")
+  truthy(err, "out-of-group source index did not report an error")
+
+  local win = api.nvim_get_current_win()
+  local wins = api.nvim_tabpage_list_wins(0)
+  local displays = current_buffers(wins)
+  local before = vim.deepcopy(group.buffers)
+  local first = before[1]
+  ok, result = plugin.reorder_to(#before, { from_index = 1 })
+  truthy(ok, "valid reorder_to failed: " .. tostring(result))
+  truthy(result.moved, "valid reorder_to did not move a buffer")
+  eq(result.buf, first, "reorder result returned the wrong buffer")
+  eq(result.group_id, group.id, "reorder result returned the wrong group")
+  eq(result.from, 1, "reorder result returned the wrong source index")
+  eq(result.to, #before, "reorder result returned the wrong target index")
+  local expected = vim.deepcopy(before)
+  expected[1], expected[#expected] = expected[#expected], expected[1]
+  local after = state()
+  eq(group_for(after, win).buffers, expected, "reorder_to did not swap group positions")
+  eq(api.nvim_get_current_win(), win, "reorder_to changed focus")
+  eq(current_buffers(wins), displays, "reorder_to changed displayed buffers")
+
+  ok, result = plugin.reorder(1, { from_index = 1 })
+  truthy(ok, "valid delta reorder failed: " .. tostring(result))
+  truthy(result.moved, "valid delta reorder did not move a buffer")
+  eq(result.from, 1, "delta result returned the wrong source index")
+  eq(result.to, 2, "delta result returned the wrong target index")
+  local delta_expected = vim.deepcopy(expected)
+  delta_expected[1], delta_expected[2] = delta_expected[2], delta_expected[1]
+  eq(group_for(state(), win).buffers, delta_expected, "delta reorder did not swap adjacent positions")
+  expected = delta_expected
+
+  ok, result = plugin.reorder_to(-1, { from_index = 1 })
+  truthy(ok, "negative target reorder failed: " .. tostring(result))
+  eq(result.to, #expected, "-1 did not resolve to the last group position")
+  local after_negative = state()
+  local negative_expected = vim.deepcopy(expected)
+  negative_expected[1], negative_expected[#negative_expected] =
+    negative_expected[#negative_expected], negative_expected[1]
+  eq(group_for(after_negative, win).buffers, negative_expected, "negative target did not swap with the last position")
+
+  ok, result = plugin.reorder(100, { from_index = 1 })
+  truthy(ok, "out-of-range delta failed: " .. tostring(result))
+  falsy(result.moved, "out-of-range delta moved a buffer")
+  eq(result.from, 1, "out-of-range result lost source index")
+  eq(result.to, 101, "out-of-range result lost requested index")
+  eq(group_for(state(), win).buffers, negative_expected, "out-of-range delta changed group order")
+  ok, result = plugin.reorder_to(#negative_expected + 1, { from_index = 1 })
+  truthy(ok, "out-of-range positive target failed: " .. tostring(result))
+  falsy(result.moved, "out-of-range positive target moved a buffer")
+  eq(result.to, #negative_expected + 1, "positive target limit returned the wrong index")
+  eq(group_for(state(), win).buffers, negative_expected, "out-of-range positive target changed group order")
+  ok, result = plugin.reorder_to(-#negative_expected - 1, { from_index = 1 })
+  truthy(ok, "out-of-range negative target failed: " .. tostring(result))
+  falsy(result.moved, "out-of-range negative target moved a buffer")
+  eq(result.to, 0, "negative target limit returned the wrong index")
+  eq(group_for(state(), win).buffers, negative_expected, "out-of-range negative target changed group order")
+
+  local before_cycle = group_for(state(), win)
+  local displayed = api.nvim_win_get_buf(win)
+  local displayed_index
+  for i, buf in ipairs(before_cycle.buffers) do
+    if buf == displayed then
+      displayed_index = i
+      break
+    end
+  end
+  local next_buffer = before_cycle.buffers[displayed_index % #before_cycle.buffers + 1]
+  must_succeed(plugin.cycle(1), "cycle after reordering")
+  eq(api.nvim_get_current_win(), win, "cycle changed focused group")
+  eq(api.nvim_win_get_buf(win), next_buffer, "cycle ignored reordered group order")
+
+  must_succeed(plugin.move("right"), "initial partition for group-local reorder")
+  local partitioned = state()
+  local left, right = group_side(partitioned, "left"), group_side(partitioned, "right")
+  truthy(left and right, "partition did not create two groups")
+  truthy(#left.buffers >= 2, "source group needs multiple buffers")
+  api.nvim_set_current_win(right.win)
+  local extra = make_buffer("reorder-right-extra.txt")
+  must_succeed(plugin.open(extra, { win = right.win }), "populate second group")
+  partitioned = state()
+  left, right = group_side(partitioned, "left"), group_side(partitioned, "right")
+  truthy(#right.buffers >= 2, "target group needs multiple buffers")
+  local left_before = vim.deepcopy(left.buffers)
+  local right_before = vim.deepcopy(right.buffers)
+  local focus_before = api.nvim_get_current_win()
+  local displays_before = current_buffers(api.nvim_tabpage_list_wins(0))
+  ok, result = plugin.reorder_to(2, { group_id = right.id, from_index = 1 })
+  truthy(ok, "group-targeted reorder failed: " .. tostring(result))
+  local grouped = state()
+  left, right = group_side(grouped, "left"), group_side(grouped, "right")
+  local right_expected = vim.deepcopy(right_before)
+  right_expected[1], right_expected[2] = right_expected[2], right_expected[1]
+  eq(left.buffers, left_before, "reordering one group changed another group")
+  eq(right.buffers, right_expected, "group_id did not target the requested group")
+  eq(api.nvim_get_current_win(), focus_before, "group-targeted reorder changed focus")
+  eq(
+    current_buffers(api.nvim_tabpage_list_wins(0)),
+    displays_before,
+    "group-targeted reorder changed displayed buffers"
+  )
+
+  local float_buf = api.nvim_create_buf(false, true)
+  local float = api.nvim_open_win(float_buf, false, {
+    relative = "editor",
+    row = 1,
+    col = 1,
+    width = 10,
+    height = 1,
+    style = "minimal",
+  })
+  local float_displays = current_buffers(api.nvim_tabpage_list_wins(0))
+  local float_focus = api.nvim_get_current_win()
+  ok, err = plugin.reorder(1, { win = float })
+  falsy(ok, "floating window was accepted as a reorder target")
+  truthy(err, "floating target did not report an error")
+  eq(api.nvim_get_current_win(), float_focus, "failed floating target changed focus")
+  eq(current_buffers(api.nvim_tabpage_list_wins(0)), float_displays, "failed floating target changed displayed buffers")
+  api.nvim_win_close(float, true)
+end
+
 cases.disable_reenable_and_setup_idempotence = function()
   local map_old_x = function() end
   local map_old_y = function() end

@@ -15,7 +15,7 @@ it in your plugin setup:
 
 ```lua
 vim.pack.add({
-  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.2.0" },
+  { src = "https://github.com/Perazzojoao/buffer_groups", version = "v0.3.0" },
 })
 require("buffer_groups").setup({
   keymaps = {
@@ -136,7 +136,7 @@ an explicit `save = true` still requests saving even when forced.
 require("buffer_groups").setup({
   keymaps = {}, -- Optional keys: move_left, move_right, previous, next, close,
                 -- close_group, close_others, toggle_fullscreen, toggle_winbar, toggle_tabs,
-                -- toggle_tabline_groups.
+                -- toggle_tabline_groups, reorder_left, reorder_right.
   exclude = {
     floating = true, -- Floating windows cannot be group owners.
     unlisted = true,
@@ -162,8 +162,13 @@ require("buffer_groups").setup({
     last_buffer = "empty", -- Alternative: "quit".
     save_others = false, -- Save modified buffers before close_others().
   },
+  reordering = { enabled = false },
 })
 ```
+
+Reordering keymaps are installed only when explicitly configured and when the
+feature is active. For example: `reordering = { enabled = true }` with
+`keymaps = { reorder_left = "<A-H>", reorder_right = "<A-L>" }`.
 
 List options replace their defaults. Exclusion predicates receive
 `{ buf, win, tabpage }`; `win` may be absent for a hidden buffer. Returning `true`
@@ -186,6 +191,8 @@ close keymaps can save first, then call `close()`.
 local groups = require("buffer_groups")
 groups.move("right", { buf = bufnr, win = editor_win })
 groups.cycle(1) -- Use -1 to cycle backwards.
+groups.reorder(-1) -- Swap with the previous buffer in the focused group.
+groups.reorder_to(1) -- Swap with the first buffer in the focused group.
 groups.open(bufnr, { win = editor_win })
 groups.register(bufnr, { win = editor_win })
 groups.close(bufnr, { force = false })
@@ -202,6 +209,8 @@ groups.toggle_group_tabs() -- Defaults to the focused group and tabpage.
 groups.set_tabline_groups_visible(false)
 groups.toggle_tabline_groups()
 local tabline_options = groups.get_tabline_options()
+local reorder_options = groups.get_reordering_options()
+local reorder_enabled = groups.is_reordering_enabled()
 groups.disable()
 groups.enable()
 local enabled = groups.is_enabled()
@@ -231,8 +240,57 @@ available for reactivation. `setup()` is idempotent.
 Commands: `:BufferGroupsMove left|right`, `:BufferGroupsNext`,
 `:BufferGroupsPrevious`, `:BufferGroupsClose[!]`, `:BufferGroupsCloseGroup[!]`,
 `:BufferGroupsCloseOthers[!]`,
+`:BufferGroupsReorder left|right`, `:BufferGroupsReorderTo {index}`,
 `:BufferGroupsToggleFullscreen`, `:BufferGroupsEnable`,
 `:BufferGroupsDisable`.
+
+## Reordering buffers
+
+Reordering is available starting with `v0.3.0`.
+
+Reordering changes a buffer's position in its current group without
+transferring it to the other group. It is disabled by default. Enable it with
+`reordering = { enabled = true }`. It has no default keymaps; configure
+`keymaps.reorder_left` and `keymaps.reorder_right` to choose mappings. For
+example, `<A-H>` and `<A-L>` represent Shift-Alt-H/L; the existing `<A-h>` and
+`<A-l>` keys can keep cycling through buffers.
+
+`reorder(-1)` or `reorder(1)` swaps the current buffer with its adjacent group
+member and does not wrap at group edges; delta `0` is a successful no-op.
+`reorder_to(index)` swaps with the member at the one-based group position; a
+negative index counts from the end. Both accept `{ win, tabpage,
+from_index }` to choose the group and source explicitly. Invalid zero or
+non-integer indices return an error; an adjacent move beyond a group edge is
+a successful no-op. Successful changes return `{ buf, group_id, from, to,
+moved }`; `moved` is false for a no-op. `get_reordering_options()` returns a
+copy of the configured options, and `is_reordering_enabled()` reports whether
+reordering is currently active.
+
+Configure Shift-Alt-H/L mappings and the Bufferline adapter like this:
+
+```lua
+require("buffer_groups").setup({
+  reordering = { enabled = true },
+  keymaps = { reorder_left = "<A-H>", reorder_right = "<A-L>" },
+})
+
+local adapter = require("buffer_groups.integrations.bufferline")
+local config = adapter.extend({ options = { mode = "buffers" } }, { managed_order = true })
+require("bufferline").setup(config)
+adapter.attach()
+```
+
+The Bufferline adapter can manage order when attached after Bufferline setup
+with `managed_order = true` and `mode = "buffers"`. It follows group order and
+routes Bufferline's native move commands through the group-local API. The core
+does not depend on Bufferline. Wrappers preserve Bufferline behavior for
+unmanaged buffers and while reordering is disabled. With the core active,
+managed sorting continues when `reordering.enabled = false`, while native move
+commands use Bufferline's original behavior. Disabling the core restores the
+host sorting and command behavior until it is enabled again. Bufferline pinning
+and manually created groups can override the global tabline order; these native
+partitions are not covered by the reorder integration checks. Order changes
+are session-only and are not published or persisted.
 
 Subscribe to committed state changes without accessing plugin internals:
 
@@ -377,7 +435,10 @@ python3 tests/run.py --integration --tui
 Core and adapter tests run without external plugins. Optional integration tests
 use installed Bufferline/Snacks or a dependency directory selected by
 `BG_TEST_DEPS`. Tests isolate Neovim state/log files under temporary directories.
-The PTY suite feeds actual keyboard/mouse input. See `:help buffer_groups` for
-the option and API reference.
+The PTY suites feed actual keyboard/mouse input and check the rendered order
+through Bufferline's public elements. A headless PTY cannot verify terminal
+font/key encoding or visually inspect the tabline; check Shift-Alt-H/L and the
+two-group display in your terminal when changing terminal or multiplexer setup.
+See `:help buffer_groups` for the option and API reference.
 
 License: MIT.

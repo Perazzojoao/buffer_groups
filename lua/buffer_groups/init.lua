@@ -4,6 +4,7 @@ local config = require("buffer_groups.config")
 local cfg = config.resolve()
 local tabline_groups_visible = cfg.tabline.show_groups
 local enabled, busy, tabs, next_id, maps = false, false, {}, 0, {}
+local reorder_adapter
 local pending = {}
 local homes = {}
 local WINBAR_MODULE = "buffer_groups.ui.winbar"
@@ -692,6 +693,20 @@ end
 function M.is_enabled()
   return enabled
 end
+function M.get_reordering_options()
+  return vim.deepcopy(cfg.reordering)
+end
+function M.is_reordering_enabled()
+  if not enabled or not cfg.reordering.enabled then
+    return false
+  end
+  local adapter = reorder_adapter
+  if not adapter or type(adapter.is_active) ~= "function" then
+    return false
+  end
+  local ok, active = pcall(adapter.is_active)
+  return ok and active == true
+end
 function M.get_tabline_options()
   local options = vim.deepcopy(cfg.tabline)
   options.show_groups = tabline_groups_visible
@@ -881,6 +896,88 @@ function M.cycle(delta)
     s.last = g.id
     return b
   end)
+end
+local function valid_integer(value)
+  return type(value) == "number" and value % 1 == 0
+end
+local function reordering_opts(opts)
+  if opts == nil then
+    opts = {}
+  end
+  if type(opts) ~= "table" then
+    return nil, "reorder options must be a table"
+  end
+  if opts.from_index ~= nil and (not valid_integer(opts.from_index) or opts.from_index < 1) then
+    return nil, "from_index must be a positive integer"
+  end
+  return opts
+end
+local function reorder_positions(mode, value, opts)
+  local valid_opts, opts_err = reordering_opts(opts)
+  if not valid_opts then
+    return false, opts_err
+  end
+  opts = valid_opts
+  if mode == "delta" then
+    if not valid_integer(value) then
+      return false, "reorder delta must be an integer"
+    end
+  elseif not valid_integer(value) or value == 0 then
+    return false, "reorder target must be a nonzero integer"
+  end
+  if not M.is_reordering_enabled() then
+    return false, "buffer reordering is not enabled"
+  end
+  local tab = tabid(opts)
+  local ok, result = run("reorder", tab, function()
+    local s, g, _, err = target(opts)
+    if not g then
+      return false, err or "no managed editor group"
+    end
+    local buffers = g.buffers
+    local from = opts.from_index
+    if from == nil then
+      local current = g.current
+      if not g.hidden and g.win and api.nvim_win_is_valid(g.win) then
+        current = api.nvim_win_get_buf(g.win)
+      end
+      for i, buf in ipairs(buffers) do
+        if buf == current then
+          from = i
+          break
+        end
+      end
+      if from == nil then
+        return false, "displayed buffer is not in the group"
+      end
+    elseif from > #buffers then
+      return false, "from_index is outside the group"
+    end
+    local to
+    if mode == "delta" then
+      to = from + value
+    elseif value < 0 then
+      to = #buffers + value + 1
+    else
+      to = value
+    end
+    local buf = buffers[from]
+    local moved = to >= 1 and to <= #buffers and to ~= from
+    if moved then
+      buffers[from], buffers[to] = buffers[to], buffers[from]
+    end
+    return { buf = buf, group_id = g.id, from = from, to = to, moved = moved }
+  end)
+  if not ok then
+    return false, result
+  end
+  return true, result
+end
+function M.reorder(delta, opts)
+  return reorder_positions("delta", delta, opts)
+end
+function M.reorder_to(index, opts)
+  return reorder_positions("target", index, opts)
 end
 function M.move(direction, opts)
   if direction ~= "left" and direction ~= "right" then
@@ -1362,15 +1459,38 @@ local function install_maps()
     toggle_tabline_groups = function()
       return M.toggle_tabline_groups()
     end,
+    reorder_left = function()
+      return M.reorder(-1)
+    end,
+    reorder_right = function()
+      return M.reorder(1)
+    end,
   }
+  local reordering_enabled = M.is_reordering_enabled()
   for name, lhs in pairs(cfg.keymaps) do
-    local previous = global_map(lhs)
-    local callback = function()
-      report(actions[name])
+    if (name ~= "reorder_left" and name ~= "reorder_right") or reordering_enabled then
+      local previous = global_map(lhs)
+      local callback = function()
+        report(actions[name])
+      end
+      vim.keymap.set("n", lhs, callback, { silent = true, desc = "BufferGroups " .. name })
+      maps[#maps + 1] = { lhs = lhs, callback = callback, previous = previous }
     end
-    vim.keymap.set("n", lhs, callback, { silent = true, desc = "BufferGroups " .. name })
-    maps[#maps + 1] = { lhs = lhs, callback = callback, previous = previous }
   end
+end
+local function refresh_maps()
+  if enabled then
+    restore_maps()
+    install_maps()
+  end
+end
+function M._set_reorder_adapter(provider)
+  if provider ~= nil and (type(provider) ~= "table" or type(provider.is_active) ~= "function") then
+    return false, "reorder adapter must provide is_active()"
+  end
+  reorder_adapter = provider
+  refresh_maps()
+  return true
 end
 function M.enable()
   if enabled then
@@ -1479,6 +1599,34 @@ function M.setup(opts)
       return { "left", "right" }
     end,
   })
+  api.nvim_create_user_command("BufferGroupsReorder", function(o)
+    report(function()
+      if o.args == "left" then
+        return M.reorder(-1)
+      elseif o.args == "right" then
+        return M.reorder(1)
+      end
+      return false, "expected left or right"
+    end)
+  end, {
+    nargs = 1,
+    force = true,
+    complete = function()
+      return { "left", "right" }
+    end,
+  })
+  api.nvim_create_user_command("BufferGroupsReorderTo", function(o)
+    report(function()
+      if not o.args:match("^[+-]?%d+$") then
+        return false, "expected an integer"
+      end
+      local index = tonumber(o.args)
+      if not valid_integer(index) then
+        return false, "expected an integer"
+      end
+      return M.reorder_to(index)
+    end)
+  end, { nargs = 1, force = true })
   api.nvim_create_user_command("BufferGroupsNext", function()
     report(function()
       return M.cycle(1)
